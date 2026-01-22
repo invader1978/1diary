@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-<title>Invader Stable v5 (Slight Drop on Mobile)</title>
+<title>Invader Stable v5 (Responsive U + WallDrop)</title>
 <style>
   html,body{margin:0;padding:0;background:#000;overflow:hidden;touch-action:none;}
   #bg{position:fixed;inset:0;}
@@ -65,22 +65,27 @@
 </div>
 
 <script>
-/* ========= デバイス別ドットサイズ（7/6/5） ========= */
+/* ========= デバイス別ドットサイズ ========= */
 function calcU(){
   if (innerWidth >= 1200) return 7; // 大画面PC
   if (innerWidth >= 800)  return 6; // ノート/タブレット
-  return 5;                         // スマホ
+  return 4;                         // スマホ（小さめ）
 }
-const U = calcU();
+
+let U = calcU();
 document.body.style.setProperty("--u", U);
-const isMobile = innerWidth < 800;
+
+let isMobile = innerWidth < 800;
+
+/* ★モバイルは横8・縦3、PCは横12・縦4 */
+function getCols(){ return isMobile ? 8 : 12; }
+function getRows(){ return isMobile ? 3 : 4; }
 
 /* ========= Canvas 背景 ========= */
 const bg = document.getElementById("bg");
 const ctx = bg.getContext("2d");
 function resizeCanvas(){ bg.width = innerWidth; bg.height = innerHeight; }
 resizeCanvas();
-addEventListener("resize", resizeCanvas);
 
 const stars = [...Array(120)].map(()=>({x:Math.random()*innerWidth,y:Math.random()*innerHeight,s:0.6+Math.random()*1.2}));
 
@@ -157,13 +162,27 @@ const SHIP = [
   "1101011",
   "1000001"
 ];
-drawSprite(playerEl, SHIP, playerColor());
 
-const shipW = 7*U;
-const shipH = 5*U;
+let shipW, shipH;
+
+/* サイズ変数（宣言位置はここ！） */
+let enemyW, enemyH;
+let shieldW, shieldH;
+
 const playerBottomPx = 70;
-
 let px = innerWidth/2;
+
+function recalcSizes(){
+  shipW   = 7*U;
+  shipH   = 5*U;
+  enemyW  = 7*U;
+  enemyH  = 4*U;
+  shieldW = 8*U;
+  shieldH = 6*U;
+}
+recalcSizes();
+
+drawSprite(playerEl, SHIP, playerColor());
 
 function playerTopY(){
   return innerHeight - playerBottomPx - shipH;
@@ -176,8 +195,8 @@ updatePlayerPos();
 
 /* ========= 敵 ========= */
 const enemies = [];
-const cols = 12;
-const rows = 4;
+let cols = getCols();
+let rows = getRows();
 
 const ENEMY_TYPES = [
   { a:["0100010","1111111","1011101","0100010"], b:["0100010","1111111","0101010","1010101"] },
@@ -187,12 +206,10 @@ const ENEMY_TYPES = [
 ];
 
 function enemyProfile(){
-  const baseSpeed = isMobile ? 0.30 : 0.55;                // モバイルは少しゆっくり
+  const baseSpeed = 0.55;
   const speed = baseSpeed + (wave-1)*0.05;
   const fireInterval = Math.max(40, Math.floor(140 - (wave-1)*10));
-  // ★変更点：モバイルでも「ほんの少しだけ」落下する
-  const drop = isMobile ? 0.15 : Math.max(1, 1 + (wave-1)*0.03);
-  return { speed, fireInterval, drop };
+  return { speed, fireInterval };
 }
 
 let fx = 0;
@@ -201,16 +218,20 @@ let enemyAnimTick = 0;
 let enemyFrame = 0;
 let enemyShootTick = 0;
 
-const enemyW = 7*U;
-const enemyH = 4*U;
+function formationMetrics(){
+  // ★モバイルは横間隔を少し広げて見やすく（8列なので余裕あり）
+  const stepX = (isMobile ? 12 : 10) * U;
+  const stepY = 7 * U;
+  const totalW = (cols-1)*stepX + enemyW;
+  const baseY = Math.max(60, innerHeight*0.14);
+  return { stepX, stepY, totalW, baseY };
+}
 
 function spawnEnemies(){
   enemies.forEach(e=>e.el.remove());
   enemies.length = 0;
 
-  const stepX = 10*U;
-  const stepY = 7*U;
-  const totalW = (cols-1)*stepX + enemyW;
+  const { stepX, stepY, totalW, baseY } = formationMetrics();
 
   fx = (innerWidth - totalW)/2;
   dir = 1;
@@ -227,14 +248,13 @@ function spawnEnemies(){
       drawSprite(el, type.a, col);
       document.body.appendChild(el);
 
-      const y = Math.max(60, innerHeight*0.14) + r*stepY;
-
       enemies.push({
         el,
         type,
         color: col,
+        r, c,
         xOff: c*stepX,
-        y,
+        y: baseY + r*stepY,
         x: 0
       });
     }
@@ -251,8 +271,6 @@ const SHIELD = [
   "11111111",
   "11000011"
 ];
-const shieldW = 8*U;
-const shieldH = 6*U;
 
 function spawnShields(){
   shields.forEach(s=>s.el.remove());
@@ -404,9 +422,57 @@ function reset(){
   updatePlayerPos();
 
   drawSprite(playerEl, SHIP, playerColor());
+
+  cols = getCols();
+  rows = getRows();
   spawnEnemies();
   spawnShields();
   showReady();
+}
+
+/* ========= 画面サイズ変更で U を更新＋再描画 ========= */
+function updateUnitSizeAndRedraw(){
+  const newU = calcU();
+  const newIsMobile = innerWidth < 800;
+
+  const oldIsMobile = isMobile;
+  const oldCols = cols;
+  const oldRows = rows;
+
+  // 更新
+  U = newU;
+  isMobile = newIsMobile;
+  cols = getCols();
+  rows = getRows();
+
+  document.body.style.setProperty("--u", U);
+  recalcSizes();
+
+  // 弾は見た目がズレやすいので一旦クリア
+  bullets.forEach(b=>b.remove()); bullets.length=0;
+  ebullets.forEach(b=>b.remove()); ebullets.length=0;
+
+  // 自機描き直し
+  drawSprite(playerEl, SHIP, playerColor());
+  updatePlayerPos();
+
+  // ★モバイル判定 or cols/rows が変わったら、敵は作り直す
+  if(oldIsMobile !== isMobile || oldCols !== cols || oldRows !== rows){
+    spawnEnemies();
+  }else{
+    // 敵：xOff/y を新しいU基準で作り直す（行列が同じ時だけ）
+    const { stepX, stepY, totalW, baseY } = formationMetrics();
+    fx = (innerWidth - totalW)/2;
+
+    for(const e of enemies){
+      e.xOff = e.c * stepX;
+      e.y    = baseY + e.r * stepY;
+      drawSprite(e.el, e.type.a, e.color);
+    }
+  }
+
+  // 盾：作り直し
+  spawnShields();
 }
 
 /* ========= 入力 ========= */
@@ -450,6 +516,12 @@ document.querySelectorAll(".btn").forEach(btn=>{
 
 addEventListener("touchstart", ()=>{ if(over) reset(); });
 
+/* ========= resize ========= */
+addEventListener("resize", ()=>{
+  resizeCanvas();
+  updateUnitSizeAndRedraw();
+});
+
 /* ========= ループ ========= */
 function update(){
   // 背景
@@ -475,14 +547,13 @@ function update(){
 
   // 敵移動
   const prof = enemyProfile();
-  const stepX = 10*U;
-  const totalW = (cols-1)*stepX + enemyW;
+  const { totalW } = formationMetrics();
 
   if(!ready && !clearing && !over){
     fx += dir * prof.speed;
   }
 
-  // 端で反転（落下）
+  // 壁反転＋下げ
   const leftEdge = fx;
   const rightEdge = fx + totalW;
 
@@ -490,14 +561,11 @@ function update(){
     if(rightEdge > innerWidth-10 || leftEdge < 10){
       dir *= -1;
 
-      if(prof.drop > 0){
-        // 反転時に少し落とす（モバイルは超ゆっくり）
-        const drop = 2 * prof.drop;
-        // 念のため下限（自機より上に止める）
-        const enemyMaxY = playerTopY() - 120;
-        for(const e of enemies){
-          e.y = Math.min(enemyMaxY, e.y + drop);
-        }
+      const wallDrop = 0.1;
+      const enemyMaxY = playerTopY() - 120;
+
+      for(const e of enemies){
+        e.y = Math.min(enemyMaxY, e.y + wallDrop);
       }
     }
   }
