@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Slime Invader v7.1</title>
+
+<style>
+html,body{margin:0;padding:0;background:black;overflow:hidden;touch-action:none;}
+#bg{position:fixed;inset:0;}
+#hud{position:fixed;top:6px;left:6px;color:white;z-index:5;font-size:14px;}
+
+#player{position:absolute;bottom:90px;width:64px;height:56px;transform:translateX(-50%);z-index:5;}
+.pixel{position:absolute;width:8px;height:8px;}
+
+.bullet{position:absolute;width:4px;height:12px;background:cyan;}
+.ebullet{position:absolute;width:4px;height:12px;background:orange;}
+
+.enemy{position:absolute;width:56px;height:32px;}
+.enemy div{position:absolute;width:8px;height:8px;}
+
+.shield{position:absolute;}
+.shield .p{position:absolute;width:6px;height:6px;}
+
+.explode{position:absolute;width:4px;height:4px;background:orange;pointer-events:none;}
+
+.ufo{position:absolute;width:64px;height:28px;}
+.ufo div{position:absolute;width:8px;height:8px;background:#ff66ff;}
+
+#msg{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+font-size:36px;color:white;z-index:20;pointer-events:none;text-align:center;}
+
+#ctrl{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);display:flex;gap:12px;z-index:10;}
+.btn{width:64px;height:64px;border-radius:50%;background:rgba(0,0,0,.5);
+border:2px solid cyan;color:white;font-size:22px;font-weight:bold;}
+</style>
+</head>
+
+<body>
+
+<canvas id="bg"></canvas>
+
+<div id="hud">
+SCORE <span id="score">0</span> /
+WAVE <span id="wave">1</span><br>
+LIFE <span id="life">❤️❤️❤️</span>
+</div>
+
+<div id="player"></div>
+<div id="msg"></div>
+
+<div id="ctrl">
+  <button class="btn" data-k="L">◀</button>
+  <button class="btn" data-k="R">▶</button>
+  <button class="btn" data-k="S">A</button>
+</div>
+
+<script>
+/* ===== 環境 ===== */
+const isMobile = innerWidth < 700;
+
+/* ===== 背景 ===== */
+const bg=document.getElementById("bg"),ctx=bg.getContext("2d");
+function resize(){bg.width=innerWidth;bg.height=innerHeight;}
+resize();addEventListener("resize",resize);
+const stars=[...Array(120)].map(()=>({x:Math.random()*innerWidth,y:Math.random()*innerHeight,s:0.6+Math.random()*1.2}));
+
+/* ===== 状態 ===== */
+let px=innerWidth/2,score=0,wave=1,ready=true,over=false,clearing=false;
+let canShoot=true,holdL=false,holdR=false,life=3,invincible=0;
+let nextUfoTime = performance.now() + rand(10000,20000);
+
+/* ===== HUD ===== */
+const scoreEl=document.getElementById("score");
+const waveEl=document.getElementById("wave");
+const lifeEl=document.getElementById("life");
+
+/* ===== 色管理 ===== */
+function shieldColor(){
+ if(wave<3) return "#66ffaa";
+ if(wave<5) return "#66ccff";
+ if(wave<8) return "#ffcc66";
+ return "#ff6666";
+}
+function playerColor(){
+ const sc = shieldColor();
+ if(sc === "#66ffaa") return "#44ffdd";
+ if(sc === "#66ccff") return "#66ff66";
+ if(sc === "#ffcc66") return "#66aaff";
+ if(sc === "#ff6666") return "#66ffcc";
+ return "#44ff88";
+}
+
+/* ===== 自機 ===== */
+const player=document.getElementById("player");
+["0011100","0111110","1111111","1101011","1000001"].forEach((r,y)=>[...r].forEach((v,x)=>{
+ if(v==="1"){
+  const p=document.createElement("div");
+  p.className="pixel";
+  p.style.left=x*8+"px"; p.style.top=y*8+"px";
+  p.style.background = playerColor();
+  player.appendChild(p);
+ }
+}));
+function py(){ return player.offsetTop; }
+function updatePlayerColor(){
+ [...player.children].forEach(p=>p.style.background = playerColor());
+}
+
+/* ===== 弾 ===== */
+const bullets=[], ebullets=[];
+function shoot(){
+ if(ready||over||clearing||!canShoot)return;
+ canShoot=false;
+ const b=document.createElement("div");
+ b.className="bullet"; b.x=px; b.y=py();
+ b.style.left=b.x+"px"; b.style.top=b.y+"px";
+ document.body.appendChild(b); bullets.push(b);
+}
+
+/* ===== 敵性能 ===== */
+function enemyProfile(){
+ if(wave<3) return {colors:["#ffaaaa","#ff7777","#ff4444","#cc2222"],spd:1,fire:1,drop:1};
+ if(wave<5) return {colors:["#f0ccff","#dd99ff","#cc66ff","#aa33ff"],spd:1.2,fire:1.3,drop:1.2};
+ return {colors:["#bbffdd","#88ffbb","#55ff99","#22cc66"],spd:1.5,fire:1.6,drop:1.5};
+}
+
+/* ===== 敵 ===== */
+let enemies=[],fx=0,fy=40,dir=1,cols=7,rows=4,enemyShootTimer=120,animTimer=0;
+
+function spawnEnemies(){
+ enemies.forEach(e=>e.el.remove()); enemies=[];
+ const prof=enemyProfile();
+ fx=innerWidth/2-cols*30;
+ fy=Math.max(40,innerHeight*0.12);
+ dir=1;
+
+ const invaders = [
+  {a:["0100010","1111111","1011101","0100010"],
+   b:["0100010","1111111","0101010","1010101"]},
+  {a:["0011100","0111110","1101011","0111110"],
+   b:["0011100","1111111","0101010","1010101"]},
+  {a:["0110110","1111111","0101010","1010101"],
+   b:["0011100","0111110","1101011","0111110"]},
+  {a:["0011100","1111111","1010101","0100010"],
+   b:["0011100","0111110","0101010","1010101"]}
+ ];
+
+ for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+  const el=document.createElement("div"); el.className="enemy";
+  const type = invaders[r % invaders.length];
+  const sprite = type.a;
+
+  sprite.forEach((row,y)=>[...row].forEach((v,x)=>{
+   if(v==="1"){
+    const p=document.createElement("div");
+    p.style.left=x*8+"px"; p.style.top=y*8+"px";
+    p.style.background=prof.colors[rows-1-r];
+    el.appendChild(p);
+   }
+  }));
+
+  const ex = fx + c*60, ey = fy + r*50;
+  el.style.left = ex + "px"; el.style.top = ey + "px";
+
+  document.body.appendChild(el);
+  enemies.push({el,fx:c*60,fy:r*50,x:ex,y:ey,type,frame:0});
+ }
+}
+
+/* ===== シールド ===== */
+let shields=[];
+function spawnShields(){
+ shields.forEach(s=>s.el.remove()); shields=[];
+ const baseY=py()-70, xs=[0.2,0.4,0.6,0.8];
+ const shape=["00111100","01111110","11111111","11111111","11111111","11000011"];
+
+ xs.forEach(p=>{
+  const el=document.createElement("div"); el.className="shield";
+  const x=innerWidth*p-36, y=baseY;
+  el.style.left=x+"px"; el.style.top=y+"px";
+
+  shape.forEach((r,yy)=>[...r].forEach((v,xx)=>{
+   if(v==="1"){
+    const d=document.createElement("div");
+    d.className="p"; d.style.left=xx*6+"px"; d.style.top=yy*6+"px";
+    d.style.background = shieldColor();
+    el.appendChild(d);
+   }
+  }));
+
+  document.body.appendChild(el);
+  shields.push({el,x,y});
+ });
+}
+
+/* ===== 爆発 ===== */
+function explode(x,y){
+ for(let i=0;i<18;i++){
+  const p=document.createElement("div");
+  p.className="explode";
+  p.x=x; p.y=y;
+  p.style.left=x+"px"; p.style.top=y+"px";
+  p.vx=(Math.random()-0.5)*7; p.vy=(Math.random()-0.5)*7;
+  document.body.appendChild(p); let t=24;
+  (function a(){
+   p.x+=p.vx; p.y+=p.vy;
+   p.style.left=p.x+"px"; p.style.top=p.y+"px";
+   if(--t>0)requestAnimationFrame(a); else p.remove();
+  })();
+ }
+}
+
+/* ===== UFO ===== */
+let ufo=null;
+function spawnUFO(){
+ if(ufo)return;
+ const fromLeft=Math.random()<0.5;
+ const el=document.createElement("div"); el.className="ufo";
+
+ ["00111100","11111111","01111110"].forEach((r,y)=>[...r].forEach((v,x)=>{
+  if(v==="1"){
+   const p=document.createElement("div");
+   p.style.left=x*8+"px"; p.style.top=y*8+"px";
+   el.appendChild(p);
+  }
+ }));
+
+ const y=fy-40, x=fromLeft?-80:innerWidth+80;
+ el.style.left=x+"px"; el.style.top=y+"px";
+ document.body.appendChild(el);
+ ufo={el,x,y,dir:fromLeft?1:-1};
+}
+
+/* ===== 表示 ===== */
+const msg=document.getElementById("msg");
+function showReady(){ ready=true; msg.textContent="READY"; setTimeout(()=>{msg.textContent=""; ready=false;},1200); }
+function showClearThenNextWave(){
+ clearing=true; msg.textContent="CLEAR!";
+ setTimeout(()=>{
+  msg.textContent="";
+  wave++; waveEl.textContent=wave;
+  spawnEnemies(); spawnShields(); updatePlayerColor();
+  clearing=false; showReady();
+ },1200);
+}
+function gameOver(){
+ if(over)return;
+ over=true; msg.innerHTML="GAME OVER<br>TAP or ENTER";
+ for(let i=0;i<5;i++) setTimeout(()=>explode(px,py()+20),i*120);
+}
+
+/* ===== リセット ===== */
+function reset(){
+ bullets.forEach(b=>b.remove()); bullets.length=0;
+ ebullets.forEach(b=>b.remove()); ebullets.length=0;
+ if(ufo){ufo.el.remove();ufo=null;}
+ score=0; wave=1; life=3; invincible=0; over=false; clearing=false;
+ scoreEl.textContent=0; waveEl.textContent=1; lifeEl.textContent="❤️❤️❤️";
+ px=innerWidth/2; canShoot=true; nextUfoTime=performance.now()+rand(10000,20000);
+ spawnEnemies(); spawnShields(); updatePlayerColor(); showReady();
+}
+
+/* ===== 判定 ===== */
+function rand(a,b){ return a + Math.random()*(b-a); }
+function hitXY(ax,ay,aw,ah,bx,by,bw,bh){
+ return !(ax+aw<bx||ax>bx+bw||ay+ah<by||ay>by+bh);
+}
+
+/* ===== 更新 ===== */
+function update(){
+ const now = performance.now();
+ if(invincible>0) invincible--;
+ player.style.opacity = invincible>0 ? (Math.floor(invincible/5)%2?0.3:1) : 1;
+
+ ctx.fillStyle="black";ctx.fillRect(0,0,bg.width,bg.height);
+ ctx.fillStyle="white";
+ for(const s of stars){
+  s.y+=s.s; if(s.y>bg.height){s.y=0;s.x=Math.random()*bg.width;}
+  ctx.fillRect(s.x,s.y,2,2);
+ }
+
+ if(holdL) px-= isMobile?2.5:4;
+ if(holdR) px+= isMobile?2.5:4;
+ px=Math.max(40,Math.min(innerWidth-40,px));
+ player.style.left=px+"px";
+
+ if(ready||over||clearing){ requestAnimationFrame(update); return; }
+
+ /* ===== 足パタパタ ===== */
+ animTimer++;
+ if(animTimer>30){
+  animTimer=0;
+  enemies.forEach(e=>{
+   e.frame=1-e.frame;
+   const sprite=e.frame?e.type.b:e.type.a;
+   [...e.el.children].forEach(p=>p.style.display="none");
+   let i=0;
+   sprite.forEach((row,y)=>[...row].forEach((v,x)=>{
+    if(v==="1"){
+     const p=e.el.children[i++];
+     if(p){
+      p.style.display="block";
+      p.style.left=x*8+"px"; p.style.top=y*8+"px";
+     }
+    }
+   }));
+  });
+ }
+
+ if(!ufo && now>nextUfoTime){ spawnUFO(); nextUfoTime=now+rand(10000,20000); }
+ if(ufo){
+  ufo.x+=ufo.dir*(isMobile?2:3);
+  ufo.el.style.left=ufo.x+"px"; ufo.el.style.top=ufo.y+"px";
+  if(ufo.x<-100||ufo.x>innerWidth+100){ufo.el.remove();ufo=null;}
+ }
+
+ bullets.forEach((b,i)=>{ b.y-=12; b.style.top=b.y+"px"; if(b.y<0){b.remove();bullets.splice(i,1);} });
+ ebullets.forEach((b,i)=>{ b.y+=isMobile?5:8; b.style.top=b.y+"px"; if(b.y>innerHeight){b.remove();ebullets.splice(i,1);} });
+
+ const prof=enemyProfile();
+ fx+=dir*((isMobile?0.25:0.4)*prof.spd + wave*0.05);
+ if(fx+cols*60>innerWidth-20||fx<20){ dir*=-1; fy+=Math.min((isMobile?6:10)*prof.drop+wave,18); }
+
+ enemies.forEach(e=>{
+  e.x=fx+e.fx; e.y=fy+e.fy;
+  e.el.style.left=e.x+"px"; e.el.style.top=e.y+"px";
+  if(invincible===0 && e.y+32>py()-10){
+   life--; lifeEl.textContent="❤️".repeat(life);
+   explode(px,py()+20); invincible=60; fy-=40;
+   if(life<=0) gameOver();
+  }
+ });
+
+ enemyShootTimer--;
+ if(enemyShootTimer<=0 && enemies.length){
+  const e=enemies[Math.floor(Math.random()*enemies.length)];
+  const b=document.createElement("div");
+  b.className="ebullet"; b.x=e.x+28; b.y=e.y+32;
+  b.style.left=b.x+"px"; b.style.top=b.y+"px";
+  document.body.appendChild(b); ebullets.push(b);
+  enemyShootTimer=Math.max(40,120/(enemyProfile().fire));
+ }
+
+ for(let i=enemies.length-1;i>=0;i--)for(let j=bullets.length-1;j>=0;j--){
+  const e=enemies[i],b=bullets[j];
+  if(hitXY(b.x,b.y,4,12,e.x,e.y,56,32)){
+   explode(e.x+28,e.y+16);
+   e.el.remove(); enemies.splice(i,1);
+   b.remove(); bullets.splice(j,1);
+   score+=100; scoreEl.textContent=score; break;
+  }
+ }
+
+ if(ufo) for(let j=bullets.length-1;j>=0;j--){
+  const b=bullets[j];
+  if(hitXY(b.x,b.y,4,12,ufo.x,ufo.y,64,28)){
+   explode(ufo.x+32,ufo.y+14);
+   ufo.el.remove(); ufo=null;
+   b.remove(); bullets.splice(j,1);
+   score+=500; scoreEl.textContent=score;
+   if(life<3){life++; lifeEl.textContent="❤️".repeat(life);}
+   break;
+  }
+ }
+
+ function shieldHit(list){
+  for(let i=list.length-1;i>=0;i--){
+   const b=list[i];
+   for(const s of shields) if(hitXY(b.x,b.y,4,12,s.x,s.y,60,40)){
+    const dots=[...s.el.children];
+    if(dots.length) dots[Math.floor(Math.random()*dots.length)].remove();
+    b.remove(); list.splice(i,1); break;
+   }
+  }
+ }
+ shieldHit(bullets); shieldHit(ebullets);
+
+ for(let i=ebullets.length-1;i>=0;i--){
+  const b=ebullets[i];
+  if(invincible===0 && hitXY(b.x,b.y,4,12,px-32,py(),64,56)){
+   life--; lifeEl.textContent="❤️".repeat(life);
+   explode(px,py()+20); invincible=60;
+   b.remove(); ebullets.splice(i,1);
+   if(life<=0) gameOver();
+  }
+ }
+
+ if(enemies.length===0) showClearThenNextWave();
+
+ requestAnimationFrame(update);
+}
+
+/* ===== 入力 ===== */
+function input(k){ if(!over&&!ready&&!clearing&&k==="S") shoot(); }
+function releaseShoot(){ canShoot=true; }
+
+document.querySelectorAll(".btn").forEach(b=>{
+ b.addEventListener("touchstart",e=>{
+  e.preventDefault();
+  if(b.dataset.k==="L") holdL=true;
+  if(b.dataset.k==="R") holdR=true;
+  if(b.dataset.k==="S") input("S");
+ },{passive:false});
+ b.addEventListener("touchend",()=>{
+  if(b.dataset.k==="L") holdL=false;
+  if(b.dataset.k==="R") holdR=false;
+  if(b.dataset.k==="S") releaseShoot();
+ });
+ b.addEventListener("mousedown",()=>{
+  if(b.dataset.k==="L") holdL=true;
+  if(b.dataset.k==="R") holdR=true;
+  if(b.dataset.k==="S") input("S");
+ });
+ b.addEventListener("mouseup",()=>{
+  if(b.dataset.k==="L") holdL=false;
+  if(b.dataset.k==="R") holdR=false;
+  if(b.dataset.k==="S") releaseShoot();
+ });
+});
+
+addEventListener("keydown",e=>{
+ if(over && e.key==="Enter") reset();
+ if(e.key==="ArrowLeft") holdL=true;
+ if(e.key==="ArrowRight") holdR=true;
+ if(e.key==="a"||e.key==="A") input("S");
+});
+addEventListener("keyup",e=>{
+ if(e.key==="ArrowLeft") holdL=false;
+ if(e.key==="ArrowRight") holdR=false;
+ if(e.key==="a"||e.key==="A") releaseShoot();
+});
+addEventListener("touchstart",()=>{ if(over) reset(); });
+
+/* ===== START ===== */
+reset(); update();
+</script>
+
+</body>
+</html>
