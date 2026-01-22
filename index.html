@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Slime Invader v7.5</title>
+<title>Slime Invader v7.6</title>
 <style>
 html,body{margin:0;padding:0;background:black;overflow:hidden;touch-action:none;}
 #bg{position:fixed;inset:0;}
@@ -58,7 +58,7 @@ const stars=[...Array(120)].map(()=>({x:Math.random()*innerWidth,y:Math.random()
 
 /* ===== 状態 ===== */
 let px=innerWidth/2,score=0,wave=1,ready=true,over=false,clearing=false;
-let canShoot=true,holdL=false,holdR=false,life=3,invincible=0,safeTimer=0,waveStartTimer=0;
+let canShoot=true,holdL=false,holdR=false,life=3,invincible=0,safeTimer=0;
 let nextUfoTime = performance.now() + rand(10000,20000);
 
 /* ===== HUD ===== */
@@ -111,19 +111,21 @@ function shoot(){
 
 /* ===== 敵性能 ===== */
 function enemyProfile(){
- if(wave<3) return {colors:["#ffaaaa","#ff7777","#ff4444","#cc2222"],spd:1,fire:1,drop:1};
- if(wave<5) return {colors:["#f0ccff","#dd99ff","#cc66ff","#aa33ff"],spd:1.1,fire:1.2,drop:1.1};
- return {colors:["#bbffdd","#88ffbb","#55ff99","#22cc66"],spd:1.2,fire:1.4,drop:1.2};
+ if(wave<3) return {colors:["#ffaaaa","#ff7777","#ff4444","#cc2222"],spd:1,fire:1};
+ if(wave<5) return {colors:["#f0ccff","#dd99ff","#cc66ff","#aa33ff"],spd:1.2,fire:1.3};
+ return {colors:["#bbffdd","#88ffbb","#55ff99","#22cc66"],spd:1.4,fire:1.6};
 }
 
 /* ===== 敵 ===== */
-let enemies=[],fx=0,dir=1,cols=7,rows=4,enemyShootTimer=120,animTimer=0;
+let enemies=[],fx=0,dir=1,cols=7,rows=4,enemyShootTimer=120,animTimer=0,enemyMaxY=0;
 
 function spawnEnemies(){
  enemies.forEach(e=>e.el.remove()); enemies=[];
  const prof=enemyProfile();
  fx=innerWidth/2-cols*30;
  dir=1;
+
+ enemyMaxY = py() - (isMobile ? 120 : 80);
 
  const invaders = [
   {a:["0100010","1111111","1011101","0100010"], b:["0100010","1111111","0101010","1010101"]},
@@ -213,8 +215,8 @@ function spawnUFO(){
   }
  }));
 
- const y=enemies.length?Math.min(...enemies.map(e=>e.fy))-40:60;
- const x=fromLeft?-80:innerWidth+80;
+ const y = Math.min(...enemies.map(e=>e.fy)) - 40;
+ const x = fromLeft ? -80 : innerWidth+80;
  el.style.left=x+"px"; el.style.top=y+"px";
  document.body.appendChild(el);
  ufo={el,x,y,dir:fromLeft?1:-1};
@@ -225,7 +227,6 @@ const msg=document.getElementById("msg");
 function showReady(){
  ready=true;
  safeTimer = wave * 30;
- waveStartTimer = 120;
  msg.textContent="READY";
  setTimeout(()=>{msg.textContent=""; ready=false;},1200);
 }
@@ -249,7 +250,7 @@ function reset(){
  bullets.forEach(b=>b.remove()); bullets.length=0;
  ebullets.forEach(b=>b.remove()); ebullets.length=0;
  if(ufo){ufo.el.remove();ufo=null;}
- score=0; wave=1; life=3; invincible=0; safeTimer=0; waveStartTimer=0; over=false; clearing=false;
+ score=0; wave=1; life=3; invincible=0; safeTimer=0; over=false; clearing=false;
  scoreEl.textContent=0; waveEl.textContent=1; lifeEl.textContent="❤️❤️❤️";
  px=innerWidth/2; canShoot=true; nextUfoTime=performance.now()+rand(10000,20000);
  spawnEnemies(); spawnShields(); updatePlayerColor(); showReady();
@@ -266,7 +267,6 @@ function update(){
  const now = performance.now();
  if(invincible>0) invincible--;
  if(safeTimer>0) safeTimer--;
- if(waveStartTimer>0) waveStartTimer--;
 
  ctx.fillStyle="black";ctx.fillRect(0,0,bg.width,bg.height);
  ctx.fillStyle="white";
@@ -312,31 +312,14 @@ function update(){
  bullets.forEach((b,i)=>{ b.y-=12; b.style.top=b.y+"px"; if(b.y<0){b.remove();bullets.splice(i,1);} });
  ebullets.forEach((b,i)=>{ b.y+=isMobile?5:8; b.style.top=b.y+"px"; if(b.y>innerHeight){b.remove();ebullets.splice(i,1);} });
 
- /* 敵移動 */
+ /* 敵横移動のみ */
  const prof=enemyProfile();
- fx+=dir*((isMobile?0.2:0.35)*prof.spd + wave*0.02);
-
- if((fx+cols*60>innerWidth-20||fx<20) && waveStartTimer===0){
-  dir*=-1;
-  const step = isMobile ? 3 : 10;
-  enemies.forEach(e=>{
-   e.fy += step * prof.drop * 0.5;
-  });
- }
-
- const hitLine = isMobile ? py()+60 : py()-10;
+ fx+=dir*((isMobile?0.25:0.4)*prof.spd + wave*0.03);
+ if(fx+cols*60>innerWidth-20||fx<20) dir*=-1;
 
  enemies.forEach(e=>{
   e.x=fx+e.fx; e.y=e.fy;
   e.el.style.left=e.x+"px"; e.el.style.top=e.y+"px";
-  if(e.y+32 > hitLine){
-   enemies.forEach(en=>en.fy-=20);
-   if(invincible===0 && safeTimer===0){
-    life--; lifeEl.textContent="❤️".repeat(life);
-    explode(px,py()+20); invincible=60;
-    if(life<=0) gameOver();
-   }
-  }
  });
 
  /* 敵弾 */
