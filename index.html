@@ -18,17 +18,7 @@
     text-shadow:0 2px 0 rgba(0,0,0,.5);
     z-index:20;pointer-events:none;text-align:center;
   }
-  #ctrl{
-    position:fixed;left:50%;bottom:10px;transform:translateX(-50%);
-    display:flex;gap:12px;z-index:50;
-  }
-  .btn{
-    width:64px;height:64px;border-radius:50%;
-    background:rgba(0,0,0,.55);
-    border:2px solid #0ff;color:#fff;
-    font-size:22px;font-weight:800;
-    user-select:none;
-  }
+
 </style>
 </head>
 <body>
@@ -41,10 +31,7 @@
 </div>
 <div id="msg"></div>
 
-<div id="ctrl">
-  <button class="btn" data-k="L">◀</button>
-  <button class="btn" data-k="R">▶</button>
-  <button class="btn" data-k="S">A</button>
+  </div>
 </div>
 
 <script>
@@ -85,13 +72,13 @@ function aabb(ax,ay,aw,ah,bx,by,bw,bh){
    スプライト（ビット）
 ========================= */
 const SHIP = [
-  "0001000",
-  "0011100",
-  "0111110",
-  "1111111",
-  "1111111",
-  "0111110",
-  "1100011"
+  "00000100000",
+  "00001110000",
+  "00001110000",
+  "01111111110",
+  "11111111111",
+  "11111111111",
+  "11111111111"
 ];
 
 const ENEMY_TYPES = [
@@ -364,7 +351,10 @@ function showReady(){
 
   ready = true;
   safeTimer = Math.floor(wave * 0.5 * 60);
-  msgEl.textContent = "READY";
+
+  // READY表示はしない（要望）
+  // msgEl.textContent = "READY";
+
   msgTimer = setTimeout(()=>{
     if(!over) msgEl.textContent = "";
     ready = false;
@@ -669,7 +659,7 @@ function render(){
 }
 
 /* =========================
-   入力
+   入力（PC）
 ========================= */
 addEventListener("keydown", (e)=>{
   if(over && e.key === "Enter") reset();
@@ -683,32 +673,9 @@ addEventListener("keyup", (e)=>{
   if(e.key === " " || e.key === "a" || e.key === "A") canShoot = true;
 });
 
-document.querySelectorAll(".btn").forEach(btn=>{
-  const k = btn.dataset.k;
-  btn.addEventListener("touchstart",(e)=>{
-    e.preventDefault();
-    if(k==="L") holdL=true;
-    if(k==="R") holdR=true;
-    if(k==="S") shoot();
-  },{passive:false});
-  btn.addEventListener("touchend",()=>{
-    if(k==="L") holdL=false;
-    if(k==="R") holdR=false;
-    if(k==="S") canShoot=true;
-  });
-  btn.addEventListener("mousedown",()=>{
-    if(k==="L") holdL=true;
-    if(k==="R") holdR=true;
-    if(k==="S") shoot();
-  });
-  btn.addEventListener("mouseup",()=>{
-    if(k==="L") holdL=false;
-    if(k==="R") holdR=false;
-    if(k==="S") canShoot=true;
-  });
-});
-
-addEventListener("touchstart", ()=>{ if(over) reset(); });
+/* =========================
+   入力（モバイル：アナログ＋攻撃）
+========================= */
 
 /* =========================
    (5) resize最適化：rAFデバウンス + 最小作り直し
@@ -783,3 +750,68 @@ loop();
 </script>
 </body>
 </html>
+
+/* =========================
+   入力（モバイル：画面タップで射撃 / 左右タップで移動）
+========================= */
+let touchActive = false;
+let touchSide = 0; // -1 left, 1 right
+
+function handleTouchStart(e){
+  if(over){
+    reset();
+    return;
+  }
+  if(!isMobile) return;
+  e.preventDefault();
+
+  const t = e.touches[0];
+  const x = t.clientX;
+
+  // 射撃
+  canShoot = true;
+  shoot();
+
+  // 移動方向
+  if(x < innerWidth * 0.5){
+    holdL = true;
+    holdR = false;
+    touchSide = -1;
+  }else{
+    holdR = true;
+    holdL = false;
+    touchSide = 1;
+  }
+  touchActive = true;
+}
+
+function handleTouchMove(e){
+  if(!isMobile || !touchActive) return;
+  const t = e.touches[0];
+  const x = t.clientX;
+
+  if(x < innerWidth * 0.5){
+    holdL = true;
+    holdR = false;
+    touchSide = -1;
+  }else{
+    holdR = true;
+    holdL = false;
+    touchSide = 1;
+  }
+}
+
+function handleTouchEnd(e){
+  if(!isMobile) return;
+  holdL = false;
+  holdR = false;
+  touchActive = false;
+  touchSide = 0;
+  canShoot = true;
+}
+
+// canvas 全体で受付
+cv.addEventListener("touchstart", handleTouchStart, {passive:false});
+cv.addEventListener("touchmove", handleTouchMove, {passive:false});
+cv.addEventListener("touchend", handleTouchEnd);
+cv.addEventListener("touchcancel", handleTouchEnd);
