@@ -3,22 +3,67 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-<title>Invader Stable v6 (Full Canvas)</title>
+<title>Invader Stable v6 (Full Canvas) + Stick + Pause</title>
 <style>
   html,body{margin:0;padding:0;background:#000;overflow:hidden;touch-action:none;}
-  canvas{position:fixed;inset:0;display:block;;touch-action:none;pointer-events:auto}
-  #hud{position:fixed;top:8px;left:8px;z-index:10;color:#fff;
+  canvas{position:fixed;inset:0;display:block;touch-action:none;pointer-events:auto}
+
+  #hud{
+    position:fixed;top:8px;left:8px;z-index:10;color:#fff;
     font:14px/1.3 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-    user-select:none;
-  
-    pointer-events:none;
-  #msg{
-    position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
-    color:#fff;font:700 40px/1 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-    text-shadow:0 2px 0 rgba(0,0,0,.5);
-    z-index:20;pointer-events:none;text-align:center;
+    user-select:none;pointer-events:none;
   }
 
+  #pauseBtn{
+    position:fixed;top:10px;right:10px;z-index:60;
+    padding:8px 12px;font:700 14px/1 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    color:#fff;background:rgba(0,0,0,.55);
+    border:2px solid rgba(255,255,255,.25);border-radius:10px;
+    cursor:pointer;pointer-events:auto;user-select:none;
+  }
+
+  #msg{
+    position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+    color:#fff;font:700 40px/1 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    text-shadow:0 2px 0 rgba(0,0,0,.5);
+    z-index:40;pointer-events:none;text-align:center;white-space:pre-line;
+  }
+
+  /* ===== Mobile controls ===== */
+  .controls{position:fixed;inset:0;z-index:50;pointer-events:none}
+
+  #stickBase,#stickKnob{
+    position:fixed;border-radius:50%;
+    pointer-events:auto;touch-action:none;user-select:none;
+  }
+  #stickBase{
+    width:140px;height:140px;left:22px;bottom:22px;
+    background:rgba(40,40,40,.55);
+    border:2px solid rgba(255,255,255,.25);
+  }
+  #stickKnob{
+    width:74px;height:74px;left:22px;bottom:22px;
+    background:rgba(0,0,0,.65);
+    border:2px solid rgba(255,255,255,.20);
+  }
+
+  #shootBtn{
+    position:fixed;width:120px;height:120px;
+    right:22px;bottom:28px;border-radius:50%;
+    pointer-events:auto;touch-action:none;
+    background:radial-gradient(circle at 30% 30%,rgba(255,255,255,.35),rgba(255,0,0,.9));
+    border:2px solid rgba(255,255,255,.25);
+  }
+  #shootLabel{
+    position:fixed;right:22px;bottom:160px;
+    color:#fff;font:800 14px system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    padding:6px 10px;border:2px solid rgba(255,255,255,.25);
+    border-radius:10px;background:rgba(0,0,0,.45);pointer-events:none;
+  }
+
+  @media (min-width:900px){
+    .controls{display:none;}
+  }
 </style>
 </head>
 <body>
@@ -29,7 +74,16 @@
   WAVE <span id="wave">1</span><br>
   LIFE <span id="life">❤️❤️❤️</span>
 </div>
+
+<button id="pauseBtn" type="button">PAUSE</button>
 <div id="msg"></div>
+
+<div class="controls" id="controls">
+  <div id="stickBase"></div>
+  <div id="stickKnob"></div>
+  <div id="shootBtn"></div>
+  <div id="shootLabel">SHOT</div>
+</div>
 
 <script>
 /* =========================
@@ -38,17 +92,10 @@
 const cv = document.getElementById("cv");
 const ctx = cv.getContext("2d", { alpha:false });
 
-function resizeCanvas(){
-  cv.width = innerWidth;
-  cv.height = innerHeight;
-}
+function resizeCanvas(){ cv.width = innerWidth; cv.height = innerHeight; }
 resizeCanvas();
 
-function calcU(){
-  if (innerWidth >= 1200) return 7;
-  if (innerWidth >= 800)  return 6;
-  return 4;
-}
+function calcU(){ if (innerWidth>=1200) return 7; if (innerWidth>=800) return 6; return 4; }
 let U = calcU();
 let isMobile = innerWidth < 800;
 
@@ -66,16 +113,36 @@ function aabb(ax,ay,aw,ah,bx,by,bw,bh){
 }
 
 /* =========================
-   スプライト（ビット）
+   ポーズ
+========================= */
+const pauseBtn = document.getElementById("pauseBtn");
+let paused = false;
+let msgBeforePause = "";
+
+function setPaused(next){
+  if(over) return;
+  paused = !!next;
+  pauseBtn.textContent = paused ? "RESUME" : "PAUSE";
+  if(paused){
+    msgBeforePause = msgEl.innerHTML;
+    msgEl.textContent = "PAUSED";
+    holdL = false; holdR = false;
+    stopShooting(); stickReset(); canShoot = true;
+  }else{
+    if(msgBeforePause && msgBeforePause!=="PAUSED") msgEl.innerHTML = msgBeforePause;
+    else msgEl.textContent = "";
+    msgBeforePause = "";
+  }
+}
+function togglePause(){ setPaused(!paused); }
+pauseBtn.addEventListener("click", togglePause);
+
+/* =========================
+   スプライト
 ========================= */
 const SHIP = [
-  "00000100000",
-  "00001110000",
-  "00001110000",
-  "01111111110",
-  "11111111111",
-  "11111111111",
-  "11111111111"
+  "00000100000","00001110000","00001110000",
+  "01111111110","11111111111","11111111111","11111111111"
 ];
 
 const ENEMY_TYPES = [
@@ -86,12 +153,7 @@ const ENEMY_TYPES = [
 ];
 
 const SHIELD = [
-  "00111100",
-  "01111110",
-  "11111111",
-  "11111111",
-  "11111111",
-  "11000011"
+  "00111100","01111110","11111111","11111111","11111111","11000011"
 ];
 
 function drawBitmap(lines, x, y, scale, color){
@@ -99,9 +161,7 @@ function drawBitmap(lines, x, y, scale, color){
   for(let r=0;r<lines.length;r++){
     const row = lines[r];
     for(let c=0;c<row.length;c++){
-      if(row[c]==="1"){
-        ctx.fillRect(x + c*scale, y + r*scale, scale, scale);
-      }
+      if(row[c]==="1") ctx.fillRect(x+c*scale, y+r*scale, scale, scale);
     }
   }
 }
@@ -110,16 +170,13 @@ function drawBitmap(lines, x, y, scale, color){
    色
 ========================= */
 function shieldColor(){ return "#ff3333"; }
-function playerColor(){ return "#44ff88"; } // 元の分岐は固定色でも十分見栄えするので簡略化
-
+function playerColor(){ return "#44ff88"; }
 const ROW_COLORS = ["#ff4d4d","#ffb84d","#ffff4d","#4dff4d","#4dd2ff"];
 
 /* =========================
-   サイズ計算
+   サイズ
 ========================= */
-let shipW=0, shipH=0;
-let enemyW=0, enemyH=0;
-let shieldW=0, shieldH=0;
+let shipW=0, shipH=0, enemyW=0, enemyH=0, shieldW=0, shieldH=0;
 
 function recalcSizes(){
   shipW = SHIP[0].length * U;
@@ -133,9 +190,7 @@ function recalcSizes(){
   const scale = isMobile ? 0.78 : 0.86;
   const targetW = maxEnemyW * scale;
 
-  const maxW = 5.5*U;
-  const minW = 2.6*U;
-  enemyW = clamp(targetW, minW, maxW);
+  enemyW = clamp(targetW, 2.6*U, 5.5*U);
   enemyH = enemyW * (4/7);
 
   shieldW = 8*U;
@@ -148,11 +203,7 @@ recalcSizes();
 ========================= */
 let stars = [];
 function resetStars(){
-  stars = [...Array(120)].map(()=>({
-    x:Math.random()*innerWidth,
-    y:Math.random()*innerHeight,
-    s:0.6+Math.random()*1.2
-  }));
+  stars = [...Array(120)].map(()=>({x:Math.random()*innerWidth,y:Math.random()*innerHeight,s:0.6+Math.random()*1.2}));
 }
 resetStars();
 
@@ -165,7 +216,6 @@ let invincible=0, safeTimer=0;
 let canShoot=true;
 let holdL=false, holdR=false;
 
-let msgTimer=0;
 function updateLifeHud(){ lifeEl.textContent = "❤️".repeat(Math.max(0, life)); }
 
 /* =========================
@@ -174,35 +224,21 @@ function updateLifeHud(){ lifeEl.textContent = "❤️".repeat(Math.max(0, life)
 const playerBottomPx = 70;
 let px = innerWidth/2;
 
-function playerTopY(){
-  return innerHeight - playerBottomPx - shipH;
-}
-function clampPlayer(){
-  px = clamp(px, shipW/2, innerWidth - shipW/2);
-}
+function playerTopY(){ return innerHeight - playerBottomPx - shipH; }
+function clampPlayer(){ px = clamp(px, shipW/2, innerWidth - shipW/2); }
 
 /* =========================
-   敵（隊列）
-   - aliveGridで生死管理
-   - 弾→敵は「弾から行列を逆算」してO(1)寄りに
+   敵隊列
 ========================= */
-let cols = getCols();
-let rows = getRows();
-
+let cols = getCols(), rows = getRows();
 let fx=0, fy=0, dir=1;
 let enemyInitialCount = 0;
-let enemyFrame = 0;
-let enemyAnimTick = 0;
-let enemyShootTick = 0;
-
-let moveAcc = 0;
-let wallPause = 0;
-
-let aliveGrid = []; // [r][c] = true/false
+let enemyFrame = 0, enemyAnimTick = 0, enemyShootTick = 0;
+let moveAcc = 0, wallPause = 0;
+let aliveGrid = [];
 
 function formationMetrics(){
-  const minGapX = 0.90*U;
-  const minGapY = 1.10*U;
+  const minGapX = 0.90*U, minGapY = 1.10*U;
   const stepX = enemyW + minGapX;
   const stepY = enemyH + minGapY;
   const totalW = cols*enemyW + (cols-1)*minGapX;
@@ -212,81 +248,54 @@ function formationMetrics(){
 
 function countAlive(){
   let n=0;
-  for(let r=0;r<rows;r++){
-    for(let c=0;c<cols;c++) if(aliveGrid[r][c]) n++;
-  }
+  for(let r=0;r<rows;r++) for(let c=0;c<cols;c++) if(aliveGrid[r][c]) n++;
   return n;
 }
 
 function spawnEnemies(){
-  cols = getCols();
-  rows = getRows();
+  cols = getCols(); rows = getRows();
   aliveGrid = Array.from({length:rows}, ()=>Array.from({length:cols}, ()=>true));
-
   const { totalW, baseY } = formationMetrics();
-  fx = (innerWidth - totalW)/2;
-  fy = baseY;
-  dir = 1;
-
+  fx = (innerWidth - totalW)/2; fy = baseY; dir = 1;
   enemyInitialCount = rows*cols;
-  moveAcc = 0;
-  wallPause = 0;
-  enemyFrame = 0;
-  enemyAnimTick = 0;
-  enemyShootTick = 0;
+  moveAcc = 0; wallPause = 0; enemyFrame = 0; enemyAnimTick = 0; enemyShootTick = 0;
 }
 
 /* =========================
-   盾（破壊はピクセル単位）
-   - shieldBits: shieldIndex -> 2D boolean
+   盾
 ========================= */
-let shields = []; // {x,y,bits,w,h}
+let shields = [];
 function buildShieldBits(){
-  const h = SHIELD.length;
-  const w = SHIELD[0].length;
-  const bits = Array.from({length:h}, (_,r)=>
-    Array.from({length:w}, (_,c)=> SHIELD[r][c]==="1")
-  );
+  const h = SHIELD.length, w = SHIELD[0].length;
+  const bits = Array.from({length:h}, (_,r)=>Array.from({length:w},(_,c)=>SHIELD[r][c]==="1"));
   return {bits,w,h};
 }
-
 function spawnShields(){
   shields = [];
   const baseY = playerTopY() - 80;
   const xs = [0.2,0.4,0.6,0.8];
   const proto = buildShieldBits();
-
   for(let i=0;i<xs.length;i++){
-    const x = innerWidth*xs[i] - shieldW/2;
-    const y = baseY;
-
-    // bitsをディープコピー
+    const x = innerWidth*xs[i] - shieldW/2, y = baseY;
     const bits = proto.bits.map(row=>row.slice());
     shields.push({x,y,bits,w:proto.w,h:proto.h});
   }
 }
-
 function shieldHitAndDamage(bx,by,bw,bh){
   for(const s of shields){
     if(!aabb(bx,by,bw,bh, s.x,s.y, shieldW,shieldH)) continue;
-
-    // 衝突点を盾ビット座標に変換（当たった付近をランダムに1ドット壊す）
-    const rx = clamp(Math.floor(((bx + bw/2) - s.x) / U), 0, s.w-1);
-    const ry = clamp(Math.floor(((by + bh/2) - s.y) / U), 0, s.h-1);
-
-    // 近傍を少し探して「生きてるドット」を1つ消す（元の“ランダムに1個消す”の雰囲気）
-    const candidates = [];
-    for(let dy=-1;dy<=1;dy++){
-      for(let dx=-1;dx<=1;dx++){
-        const cx = rx+dx, cy = ry+dy;
-        if(cy>=0 && cy<s.h && cx>=0 && cx<s.w && s.bits[cy][cx]) candidates.push([cy,cx]);
-      }
+    const rx = clamp(Math.floor(((bx+bw/2)-s.x)/U),0,s.w-1);
+    const ry = clamp(Math.floor(((by+bh/2)-s.y)/U),0,s.h-1);
+    const cand=[];
+    for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+      const cx=rx+dx, cy=ry+dy;
+      if(cy>=0&&cy<s.h&&cx>=0&&cx<s.w&&s.bits[cy][cx]) cand.push([cy,cx]);
     }
-    if(candidates.length){
-      const [cy,cx] = candidates[(Math.random()*candidates.length)|0];
-      s.bits[cy][cx] = false;
+    if(cand.length){
+      const [cy,cx]=cand[(Math.random()*cand.length)|0];
+      s.bits[cy][cx]=false;
     }
-    return true; // 盾に当たった
+    return true;
   }
   return false;
 }
@@ -294,294 +303,193 @@ function shieldHitAndDamage(bx,by,bw,bh){
 /* =========================
    弾・爆発
 ========================= */
-const bullets = [];  // {x,y,v}
-const ebullets = []; // {x,y,v}
-
+const bullets=[], ebullets=[];
 const BW=4, BH=10;
-
-const booms = []; // {x,y,vx,vy,t}
-
+const booms=[];
 function boom(x,y){
-  for(let i=0;i<10;i++){
-    booms.push({
-      x, y,
-      vx:(Math.random()-0.5)*5,
-      vy:(Math.random()-0.5)*5,
-      t:18
-    });
-  }
+  for(let i=0;i<10;i++) booms.push({x,y,vx:(Math.random()-.5)*5,vy:(Math.random()-.5)*5,t:18});
 }
 
 /* =========================
    射撃
 ========================= */
 function shoot(){
-  if(ready || clearing || over || !canShoot) return;
-  canShoot = false;
-  bullets.push({ x:px - BW/2, y:playerTopY(), v: -10 });
+  if(paused) return;
+  if(ready||clearing||over||!canShoot) return;
+  canShoot=false;
+  bullets.push({x:px-BW/2,y:playerTopY(),v:-10});
 }
-
 function enemyShoot(){
-  if(ready || clearing || over) return;
-
-  // 生きてる敵からランダム選択（重くない）
-  const alive = [];
-  for(let r=0;r<rows;r++){
-    for(let c=0;c<cols;c++) if(aliveGrid[r][c]) alive.push([r,c]);
-  }
+  if(paused) return;
+  if(ready||clearing||over) return;
+  const alive=[];
+  for(let r=0;r<rows;r++)for(let c=0;c<cols;c++) if(aliveGrid[r][c]) alive.push([r,c]);
   if(!alive.length) return;
-  const [r,c] = alive[(Math.random()*alive.length)|0];
-
-  const { stepX, stepY } = formationMetrics();
-  const ex = fx + c*stepX;
-  const ey = fy + r*stepY;
-
-  ebullets.push({ x: ex + enemyW/2 - BW/2, y: ey + enemyH, v: (isMobile?5:7) });
+  const [r,c]=alive[(Math.random()*alive.length)|0];
+  const {stepX,stepY}=formationMetrics();
+  const ex=fx+c*stepX, ey=fy+r*stepY;
+  ebullets.push({x:ex+enemyW/2-BW/2,y:ey+enemyH,v:isMobile?5:7});
 }
 
 /* =========================
    READY / CLEAR / GAMEOVER
 ========================= */
 function showReady(){
-  clearTimeout(msgTimer);
-  msgEl.textContent = "";
-
-  ready = true;
-  safeTimer = Math.floor(wave * 0.5 * 60);
-
-  // READY表示はしない（要望）
-  // msgEl.textContent = "READY";
-
-  msgTimer = setTimeout(()=>{
-    if(!over) msgEl.textContent = "";
-    ready = false;
-  }, 900);
+  clearTimeout(window._msgTimer);
+  if(!paused) msgEl.textContent="";
+  ready=true; safeTimer=Math.floor(wave*0.5*60);
+  window._msgTimer=setTimeout(()=>{ if(!over&&!paused) msgEl.textContent=""; ready=false; },900);
 }
-
 function nextWave(){
-  clearing = true;
-  msgEl.textContent = "CLEAR!";
+  clearing=true; if(!paused) msgEl.textContent="CLEAR!";
   setTimeout(()=>{
-    msgEl.textContent = "";
-    wave++;
-    waveEl.textContent = wave;
-    clearing = false;
-
-    spawnEnemies();
-    spawnShields();
-    showReady();
-  }, 900);
+    if(paused) return;
+    msgEl.textContent=""; wave++; waveEl.textContent=wave; clearing=false;
+    spawnEnemies(); spawnShields(); showReady();
+  },900);
 }
-
 function gameOver(){
   if(over) return;
-  over = true;
-  clearTimeout(msgTimer);
-  ready = false;
-  clearing = false;
-  msgEl.innerHTML = "GAME OVER<br>Tap or Enter";
+  over=true; paused=false; pauseBtn.textContent="PAUSE";
+  msgEl.innerHTML="GAME OVER<br>Tap or Enter";
 }
 
 /* =========================
    リセット
 ========================= */
 function reset(){
-  bullets.length = 0;
-  ebullets.length = 0;
-  booms.length = 0;
-
-  clearTimeout(msgTimer);
-  msgEl.textContent = "";
-
-  score=0; wave=1; life=3;
-  invincible=0; safeTimer=0;
-  over=false; clearing=false;
-
-  scoreEl.textContent="0";
-  waveEl.textContent="1";
-  updateLifeHud();
-
-  px = innerWidth/2;
-  clampPlayer();
-
-  spawnEnemies();
-  spawnShields();
-  showReady();
+  bullets.length=0; ebullets.length=0; booms.length=0;
+  msgEl.textContent="";
+  score=0; wave=1; life=3; invincible=0; safeTimer=0; over=false; clearing=false;
+  paused=false; pauseBtn.textContent="PAUSE"; msgBeforePause="";
+  stopShooting(); stickReset();
+  scoreEl.textContent="0"; waveEl.textContent="1"; updateLifeHud();
+  px=innerWidth/2; clampPlayer();
+  spawnEnemies(); spawnShields(); showReady();
 }
 
 /* =========================
-   (4) ループ分離：logic / collision / render
+   ロジック
 ========================= */
 function enemyProfile(){
-  const baseSpeed = 0.55;
-  const speed = baseSpeed + (wave-1)*0.05;
-  const fireInterval = Math.max(40, Math.floor(140 - (wave-1)*10));
-  return { speed, fireInterval };
+  const fireInterval=Math.max(40,Math.floor(140-(wave-1)*10));
+  return {fireInterval};
 }
 
 function updateLogic(dt){
-  // stars
+  if(paused) return;
+
   for(const s of stars){
-    s.y += s.s * (dt*0.06);
-    if(s.y > innerHeight){
-      s.y = 0; s.x = Math.random()*innerWidth;
-    }
+    s.y+=s.s*(dt*0.06);
+    if(s.y>innerHeight){s.y=0;s.x=Math.random()*innerWidth;}
   }
 
   if(invincible>0) invincible--;
   if(safeTimer>0) safeTimer--;
 
-  // player move
-  const sp = isMobile ? 3 : 4;
-  if(!ready && !clearing && !over){
-    if(holdL) px -= sp;
-    if(holdR) px += sp;
+  const sp=isMobile?3:4;
+  if(!ready&&!clearing&&!over){
+    if(holdL) px-=sp;
+    if(holdR) px+=sp;
   }
   clampPlayer();
 
-  // enemy move (元の“カクカク”を維持)
-  const { stepX, totalW } = formationMetrics();
+  const {totalW}=formationMetrics();
+  const remaining=Math.max(1,countAlive());
+  const initialCount=enemyInitialCount||remaining;
+  const ratio=remaining/initialCount;
+  const baseInterval=260,minInterval=80;
+  let moveInterval=baseInterval*ratio+minInterval*(1-ratio);
+  moveInterval=Math.max(minInterval,moveInterval)/(1+(wave-1)*0.06);
+  const stepMoveX=0.55*U*(1+(wave-1)*0.02);
+  const stepDown=0.60*U;
+  const wallPauseMs=140;
 
-  const remaining = Math.max(1, countAlive());
-  const initialCount = enemyInitialCount || remaining;
-  const ratio = remaining / initialCount;
-
-  const baseInterval = 260;
-  const minInterval  = 80;
-  let moveInterval = baseInterval * ratio + minInterval * (1 - ratio);
-  moveInterval = Math.max(minInterval, moveInterval) / (1 + (wave-1)*0.06);
-
-  const stepMoveX = 0.55 * U * (1 + (wave-1)*0.02);
-  const stepDown  = 0.60 * U;
-  const wallPauseMs = 140;
-
-  if(!ready && !clearing && !over){
-    moveAcc += dt;
-
-    if(wallPause > 0){
-      const use = Math.min(wallPause, moveAcc);
-      wallPause -= use;
-      moveAcc -= use;
+  if(!ready&&!clearing&&!over){
+    moveAcc+=dt;
+    if(wallPause>0){
+      const use=Math.min(wallPause,moveAcc);
+      wallPause-=use; moveAcc-=use;
     }
-
-    while(moveAcc >= moveInterval){
-      moveAcc -= moveInterval;
-
-      const margin = 10;
-      const nextFx = fx + dir * stepMoveX;
-      const nextLeft = nextFx;
-      const nextRight = nextFx + totalW;
-
-      if(nextRight > innerWidth - margin || nextLeft < margin){
-        dir *= -1;
-
-        const enemyMaxY = playerTopY() - 120;
-        const stepYFix = 7 * U;
-        const maxFy = enemyMaxY - (rows-1) * stepYFix;
-        fy = Math.min(fy + stepDown, maxFy);
-
-        wallPause = wallPauseMs;
-      }else{
-        fx = nextFx;
-      }
+    while(moveAcc>=moveInterval){
+      moveAcc-=moveInterval;
+      const margin=10;
+      const nextFx=fx+dir*stepMoveX;
+      const nextLeft=nextFx, nextRight=nextFx+totalW;
+      if(nextRight>innerWidth-margin||nextLeft<margin){
+        dir*=-1;
+        const enemyMaxY=playerTopY()-120;
+        const stepYFix=7*U;
+        const maxFy=enemyMaxY-(rows-1)*stepYFix;
+        fy=Math.min(fy+stepDown,maxFy);
+        wallPause=wallPauseMs;
+      }else fx=nextFx;
     }
   }
 
-  // enemy anim frame toggle
   enemyAnimTick++;
-  if(enemyAnimTick >= 28){
-    enemyAnimTick = 0;
-    enemyFrame = 1 - enemyFrame;
-  }
+  if(enemyAnimTick>=28){ enemyAnimTick=0; enemyFrame=1-enemyFrame; }
 
-  // enemy shooting
-  if(!ready && !clearing && !over){
-    const prof = enemyProfile();
+  if(!ready&&!clearing&&!over){
+    const prof=enemyProfile();
     enemyShootTick++;
-    if(enemyShootTick >= prof.fireInterval){
-      enemyShootTick = 0;
-      enemyShoot();
+    if(enemyShootTick>=prof.fireInterval){
+      enemyShootTick=0; enemyShoot();
     }
   }
 
-  // bullets move
   for(let i=bullets.length-1;i>=0;i--){
-    const b = bullets[i];
-    b.y += b.v * (dt*0.06);
-    if(b.y < -20) bullets.splice(i,1);
+    const b=bullets[i]; b.y+=b.v*(dt*0.06);
+    if(b.y<-20) bullets.splice(i,1);
   }
   for(let i=ebullets.length-1;i>=0;i--){
-    const b = ebullets[i];
-    b.y += b.v * (dt*0.06);
-    if(b.y > innerHeight + 30) ebullets.splice(i,1);
+    const b=ebullets[i]; b.y+=b.v*(dt*0.06);
+    if(b.y>innerHeight+30) ebullets.splice(i,1);
   }
 
-  // booms
   for(let i=booms.length-1;i>=0;i--){
-    const p = booms[i];
-    p.x += p.vx;
-    p.y += p.vy;
-    p.t -= 1;
-    if(p.t <= 0) booms.splice(i,1);
+    const p=booms[i]; p.x+=p.vx; p.y+=p.vy; p.t--;
+    if(p.t<=0) booms.splice(i,1);
   }
 }
 
 function detectCollisions(){
-  // bullet -> shield
+  if(paused) return;
+
   for(let i=bullets.length-1;i>=0;i--){
-    const b = bullets[i];
-    if(shieldHitAndDamage(b.x,b.y,BW,BH)){
-      bullets.splice(i,1);
-    }
+    const b=bullets[i];
+    if(shieldHitAndDamage(b.x,b.y,BW,BH)) bullets.splice(i,1);
   }
   for(let i=ebullets.length-1;i>=0;i--){
-    const b = ebullets[i];
-    if(shieldHitAndDamage(b.x,b.y,BW,BH)){
-      ebullets.splice(i,1);
-    }
+    const b=ebullets[i];
+    if(shieldHitAndDamage(b.x,b.y,BW,BH)) ebullets.splice(i,1);
   }
 
-  // bullet -> enemy (高速：弾座標から行列を逆算)
-  const { stepX, stepY } = formationMetrics();
+  const {stepX,stepY}=formationMetrics();
   for(let i=bullets.length-1;i>=0;i--){
-    const b = bullets[i];
-
-    // おおよその列/行
-    const c = Math.floor((b.x - fx) / stepX);
-    const r = Math.floor((b.y - fy) / stepY);
-
-    if(r>=0 && r<rows && c>=0 && c<cols && aliveGrid[r][c]){
-      const ex = fx + c*stepX;
-      const ey = fy + r*stepY;
-
-      // AABBで確定
-      if(aabb(b.x,b.y,BW,BH, ex,ey, enemyW,enemyH)){
-        aliveGrid[r][c] = false;
-        bullets.splice(i,1);
-
-        boom(ex + enemyW/2, ey + enemyH/2);
-        score += 100; scoreEl.textContent = score;
-
-        if(countAlive() === 0 && !over && !clearing) nextWave();
+    const b=bullets[i];
+    const c=Math.floor((b.x-fx)/stepX);
+    const r=Math.floor((b.y-fy)/stepY);
+    if(r>=0&&r<rows&&c>=0&&c<cols&&aliveGrid[r][c]){
+      const ex=fx+c*stepX, ey=fy+r*stepY;
+      if(aabb(b.x,b.y,BW,BH,ex,ey,enemyW,enemyH)){
+        aliveGrid[r][c]=false; bullets.splice(i,1);
+        boom(ex+enemyW/2,ey+enemyH/2);
+        score+=100; scoreEl.textContent=score;
+        if(countAlive()===0&&!over&&!clearing) nextWave();
       }
     }
   }
 
-  // enemy bullet -> player
   if(!over){
-    const pl = px - shipW/2;
-    const pt = playerTopY();
+    const pl=px-shipW/2, pt=playerTopY();
     for(let i=ebullets.length-1;i>=0;i--){
-      const b = ebullets[i];
-      if(aabb(b.x,b.y,BW,BH, pl,pt, shipW,shipH)){
+      const b=ebullets[i];
+      if(aabb(b.x,b.y,BW,BH,pl,pt,shipW,shipH)){
         ebullets.splice(i,1);
-
-        if(invincible===0 && safeTimer===0){
-          life--;
-          updateLifeHud();
-          boom(px, pt + shipH/2);
-          invincible = 60;
-          if(life <= 0) gameOver();
+        if(invincible===0&&safeTimer===0){
+          life--; updateLifeHud(); boom(px,pt+shipH/2); invincible=60;
+          if(life<=0) gameOver();
         }
       }
     }
@@ -589,153 +497,190 @@ function detectCollisions(){
 }
 
 function render(){
-  // 背景
-  ctx.fillStyle="#000";
-  ctx.fillRect(0,0,innerWidth,innerHeight);
+  ctx.fillStyle="#000"; ctx.fillRect(0,0,innerWidth,innerHeight);
 
-  // stars
   ctx.fillStyle="#fff";
-  for(const s of stars){
-    ctx.fillRect(s.x,s.y,2,2);
-  }
+  for(const s of stars) ctx.fillRect(s.x,s.y,2,2);
 
-  // shields
-  const sc = shieldColor();
+  const sc=shieldColor();
   for(const s of shields){
-    ctx.fillStyle = sc;
-    for(let r=0;r<s.h;r++){
-      for(let c=0;c<s.w;c++){
-        if(s.bits[r][c]){
-          ctx.fillRect(s.x + c*U, s.y + r*U, U, U);
-        }
-      }
-    }
+    ctx.fillStyle=sc;
+    for(let r=0;r<s.h;r++)for(let c=0;c<s.w;c++)
+      if(s.bits[r][c]) ctx.fillRect(s.x+c*U,s.y+r*U,U,U);
   }
 
-  // enemies
-  const { stepX, stepY } = formationMetrics();
-  for(let r=0;r<rows;r++){
-    for(let c=0;c<cols;c++){
-      if(!aliveGrid[r][c]) continue;
-      const type = ENEMY_TYPES[r % ENEMY_TYPES.length];
-      const bmp = enemyFrame ? type.b : type.a;
-      const color = ROW_COLORS[r % ROW_COLORS.length];
-
-      const x = fx + c*stepX;
-      const y = fy + r*stepY;
-
-      // enemyWに合わせてスケール（横は7ビット、縦は4ビット想定）
-      const sx = enemyW / 7;
-      // “ドット感”を維持するため、整数寄りにする（見た目が締まる）
-      const scale = Math.max(1, Math.round(sx));
-
-      drawBitmap(bmp, x, y, scale, color);
-    }
+  const {stepX,stepY}=formationMetrics();
+  for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+    if(!aliveGrid[r][c]) continue;
+    const type=ENEMY_TYPES[r%ENEMY_TYPES.length];
+    const bmp=enemyFrame?type.b:type.a;
+    const color=ROW_COLORS[r%ROW_COLORS.length];
+    const x=fx+c*stepX, y=fy+r*stepY;
+    const scale=Math.max(1,Math.round(enemyW/7));
+    drawBitmap(bmp,x,y,scale,color);
   }
 
-  // player
-  const pl = px - shipW/2;
-  const pt = playerTopY();
-  drawBitmap(SHIP, pl, pt, U, playerColor());
+  drawBitmap(SHIP,px-shipW/2,playerTopY(),U,playerColor());
 
-  // bullets
-  ctx.fillStyle="cyan";
-  for(const b of bullets){
-    ctx.fillRect(b.x, b.y, BW, BH);
-  }
-  ctx.fillStyle="orange";
-  for(const b of ebullets){
-    ctx.fillRect(b.x, b.y, BW, BH);
-  }
+  ctx.fillStyle="cyan"; for(const b of bullets) ctx.fillRect(b.x,b.y,BW,BH);
+  ctx.fillStyle="orange"; for(const b of ebullets) ctx.fillRect(b.x,b.y,BW,BH);
+  ctx.fillStyle="orange"; for(const p of booms) ctx.fillRect(p.x,p.y,4,4);
 
-  // booms
-  ctx.fillStyle="orange";
-  for(const p of booms){
-    ctx.fillRect(p.x, p.y, 4, 4);
+  if(paused){
+    ctx.fillStyle="rgba(0,0,0,.25)";
+    ctx.fillRect(0,0,innerWidth,innerHeight);
   }
 }
 
 /* =========================
-   入力（PC）
+   PC入力（Aで発射のみ／Space無効）
 ========================= */
-addEventListener("keydown", (e)=>{
-  if(over && e.key === "Enter") reset();
-  if(e.key === "ArrowLeft")  holdL = true;
-  if(e.key === "ArrowRight") holdR = true;
-  if(e.key === " " || e.key === "a" || e.key === "A") shoot();
+addEventListener("keydown",(e)=>{
+  if(e.key==="p"||e.key==="P"||e.key==="Escape"){ togglePause(); return; }
+  if(paused) return;
+  if(over && e.key==="Enter") reset();
+
+  if(e.code==="ArrowLeft") holdL=true;
+  if(e.code==="ArrowRight") holdR=true;
+
+  if(e.code==="KeyA") shoot(); // ★ Aのみ発射
 });
-addEventListener("keyup", (e)=>{
-  if(e.key === "ArrowLeft")  holdL = false;
-  if(e.key === "ArrowRight") holdR = false;
-  if(e.key === " " || e.key === "a" || e.key === "A") canShoot = true;
+addEventListener("keyup",(e)=>{
+  if(paused) return;
+  if(e.code==="ArrowLeft") holdL=false;
+  if(e.code==="ArrowRight") holdR=false;
+  if(e.code==="KeyA") canShoot=true;
 });
 
 /* =========================
-   入力（モバイル：アナログ＋攻撃）
+   モバイル：アナログスティック＋SHOT
 ========================= */
+const controls=document.getElementById("controls");
+const stickBase=document.getElementById("stickBase");
+const stickKnob=document.getElementById("stickKnob");
+const shootBtn=document.getElementById("shootBtn");
+
+let stick={active:false,pid:null,baseCx:0,baseCy:0,radius:52,dx:0};
+
+function setKnobPos(x,y){
+  const w=stickKnob.offsetWidth||74, h=stickKnob.offsetHeight||74;
+  stickKnob.style.left=(x-w/2)+"px";
+  stickKnob.style.top=(y-h/2)+"px";
+}
+function updateStickGeometry(){
+  const r=stickBase.getBoundingClientRect();
+  stick.baseCx=r.left+r.width/2;
+  stick.baseCy=r.top+r.height/2;
+  setKnobPos(stick.baseCx,stick.baseCy);
+}
+function applyStick(){
+  const dead=0.18;
+  if(Math.abs(stick.dx)<dead){ holdL=false; holdR=false; return; }
+  if(stick.dx<0){ holdL=true; holdR=false; }
+  else{ holdR=true; holdL=false; }
+}
+function stickReset(){
+  stick.active=false; stick.pid=null; stick.dx=0;
+  holdL=false; holdR=false;
+  try{ updateStickGeometry(); }catch(e){}
+}
+
+function stickDown(e){
+  if(!isMobile||paused||over) return;
+  if(stick.active) return;
+  stick.active=true; stick.pid=e.pointerId;
+  stickKnob.setPointerCapture(e.pointerId);
+  updateStickGeometry();
+  stickMove(e); e.preventDefault();
+}
+function stickMove(e){
+  if(!isMobile||paused||!stick.active||e.pointerId!==stick.pid) return;
+  const vx=e.clientX-stick.baseCx, vy=e.clientY-stick.baseCy;
+  const len=Math.hypot(vx,vy), max=stick.radius;
+  const nx=len?vx/len:0, ny=len?vy/len:0;
+  const cl=Math.min(len,max);
+  setKnobPos(stick.baseCx+nx*cl, stick.baseCy+ny*cl);
+  stick.dx=clamp(vx/max,-1,1);
+  applyStick();
+}
+function stickUp(e){
+  if(!isMobile||e.pointerId!==stick.pid) return;
+  stickReset(); e.preventDefault();
+}
+
+let shootInterval=null;
+function startShooting(){
+  if(paused) return;
+  if(over){ reset(); return; }
+  canShoot=true; shoot();
+  stopShooting();
+  shootInterval=setInterval(()=>{
+    if(paused||over) return;
+    canShoot=true; shoot();
+  },120);
+}
+function stopShooting(){
+  if(shootInterval){ clearInterval(shootInterval); shootInterval=null; }
+  canShoot=true;
+}
+
+function shootDown(e){
+  if(!isMobile||paused) return;
+  shootBtn.setPointerCapture(e.pointerId);
+  startShooting(); e.preventDefault();
+}
+function shootUp(e){
+  if(!isMobile) return;
+  stopShooting(); e.preventDefault();
+}
+
+stickKnob.addEventListener("pointerdown",stickDown);
+window.addEventListener("pointermove",stickMove,{passive:false});
+window.addEventListener("pointerup",stickUp,{passive:false});
+window.addEventListener("pointercancel",stickUp,{passive:false});
+
+shootBtn.addEventListener("pointerdown",shootDown,{passive:false});
+shootBtn.addEventListener("pointerup",shootUp,{passive:false});
+shootBtn.addEventListener("pointercancel",shootUp,{passive:false});
+
+function updateControlsVisibility(){
+  controls.style.display = (innerWidth<900) ? "block" : "none";
+  updateStickGeometry();
+}
+updateControlsVisibility();
 
 /* =========================
-   (5) resize最適化：rAFデバウンス + 最小作り直し
+   resize
 ========================= */
-let resizeQueued = false;
-addEventListener("resize", ()=>{
+let resizeQueued=false;
+addEventListener("resize",()=>{
   if(resizeQueued) return;
-  resizeQueued = true;
+  resizeQueued=true;
   requestAnimationFrame(()=>{
-    resizeQueued = false;
-
+    resizeQueued=false;
     resizeCanvas();
-
-    const oldU = U;
-    const oldIsMobile = isMobile;
-    const oldCols = cols;
-    const oldRows = rows;
-
-    U = calcU();
-    isMobile = innerWidth < 800;
-    recalcSizes();
-
-    // ブレイクポイント変化 or U変化なら、配置・盾を作り直す（敵の生存は維持）
-    const bpChanged = (oldIsMobile !== isMobile) || (oldCols !== getCols()) || (oldRows !== getRows());
-    const uChanged = oldU !== U;
-
-    // スターは常に再生成（軽い）
-    resetStars();
-
-    // 位置再計算
-    clampPlayer();
-
-    if(bpChanged){
-      // 仕様が変わる可能性があるのでゲーム一式を“破綻なく”再構築
-      // ここは好みで「進行維持」もできるけど、まず安定重視
-      reset();
-      return;
-    }
-
-    if(uChanged){
-      // 盾はU依存なので作り直し（破壊状況を保持したい場合は変換処理を追加）
-      spawnShields();
-    }
-
-    // 隊列原点だけ再センタリング（aliveは保持）
-    const { totalW, baseY } = formationMetrics();
-    fx = (innerWidth - totalW)/2;
-    fy = baseY;
+    const oldU=U, oldIsMobile=isMobile, oldCols=cols, oldRows=rows;
+    U=calcU(); isMobile=innerWidth<800; recalcSizes();
+    const bpChanged=(oldIsMobile!==isMobile)||(oldCols!==getCols())||(oldRows!==getRows());
+    resetStars(); clampPlayer(); updateControlsVisibility();
+    if(bpChanged){ reset(); return; }
+    if(oldU!==U) spawnShields();
+    const {totalW,baseY}=formationMetrics();
+    fx=(innerWidth-totalW)/2; fy=baseY;
+    if(paused) stickReset();
   });
 });
 
 /* =========================
-   メインループ
+   ループ
 ========================= */
 function loop(){
-  const now = performance.now();
-  const dt = Math.min(34, now - (loop._last || now));
-  loop._last = now;
-
+  const now=performance.now();
+  const dt=Math.min(34, now-(loop._last||now));
+  loop._last=now;
   updateLogic(dt);
   detectCollisions();
   render();
-
   requestAnimationFrame(loop);
 }
 
@@ -744,76 +689,6 @@ function loop(){
 ========================= */
 reset();
 loop();
-
-/* =========================
-   入力（iOS Safari対応：タップ/ドラッグで移動＋射撃）
-   - iOS Safariは canvas に付けたイベントが不安定なことがあるため window にも付与
-   - HUDは pointer-events:none でタップを邪魔しない
-========================= */
-let touchActive = false;
-
-function applySideByX(x){
-  if(x < innerWidth * 0.5){
-    holdL = true; holdR = false;
-  }else{
-    holdR = true; holdL = false;
-  }
-}
-
-function startInputAt(x){
-  if(over){ reset(); return; }
-  touchActive = true;
-
-  // タップ開始で1発
-  canShoot = true;
-  shoot();
-
-  // 左右移動
-  applySideByX(x);
-}
-
-function moveInputAt(x){
-  if(!touchActive) return;
-  applySideByX(x);
-}
-
-function endInput(){
-  holdL = false;
-  holdR = false;
-  touchActive = false;
-  canShoot = true;
-}
-
-// iOS Safari：pointer より touch の方が安定することが多い
-function onTouchStart(e){
-  // 2本指スクロール等を防ぐ
-  e.preventDefault();
-  const t = e.touches[0];
-  if(!t) return;
-  startInputAt(t.clientX);
-}
-function onTouchMove(e){
-  e.preventDefault();
-  const t = e.touches[0];
-  if(!t) return;
-  moveInputAt(t.clientX);
-}
-function onTouchEnd(e){
-  endInput();
-}
-
-// canvas と window の両方に付けて取りこぼしを防ぐ
-cv.addEventListener("touchstart", onTouchStart, {passive:false});
-cv.addEventListener("touchmove",  onTouchMove,  {passive:false});
-cv.addEventListener("touchend",   onTouchEnd);
-cv.addEventListener("touchcancel",onTouchEnd);
-
-window.addEventListener("touchstart", onTouchStart, {passive:false});
-window.addEventListener("touchmove",  onTouchMove,  {passive:false});
-window.addEventListener("touchend",   onTouchEnd);
-window.addEventListener("touchcancel",onTouchEnd);
-
 </script>
 </body>
-
 </html>
