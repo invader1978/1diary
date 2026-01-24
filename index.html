@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport"
   content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-<title>Invader Stable v8.1 (Cache FM / Faster Shield Contact / Curve Difficulty / Typed AliveIndex / iOS Canvas Only)</title>
+<title>Invader Stable v8.2 (Player Shoot Cooldown)</title>
 <style>
   html,body{
     margin:0;padding:0;background:#000;overflow:hidden;
@@ -115,11 +115,9 @@
   "use strict";
 
   /* =========================================================
-     v8.1 実装（指定項目）
-     ① formationMetrics キャッシュ化 / シールド接触判定の最適化
-     ② 定数を CONFIG として外出し
-     ③-8 敵発射間隔を指数カーブに
-     ④ aliveIndex を TypedArray 化 / iOSジェスチャ抑制を canvas 限定
+     v8.2
+     - v8.1 の改善点（①②③-8④）を維持
+     - ★追加：自機の発射クールダウン（連射抑制）
   ========================================================= */
 
   const CONFIG = {
@@ -142,7 +140,7 @@
       wallPauseMs: 70,
       wallMargin: 10,
 
-      // 発射（③-8：指数カーブ）
+      // 発射（指数カーブ）
       fireIntervalBase: 140,
       fireIntervalDecay: 0.93,
       fireIntervalMin: 22,
@@ -160,7 +158,6 @@
       contactMaxPerShield: 8,
       contactPerEnemy: 3,
       contactHitsCap: 40,
-      // ①：縦方向の余裕（敵帯が少し離れてたら判定しない）
       contactYSlack: 24,
     },
     player: {
@@ -169,6 +166,9 @@
       invincibleFrames: 60,
       bulletW: 4,
       bulletH: 10,
+
+      // ★追加：発射間隔（ms） 例）250/350/500
+      shootCooldownMs: 500
     }
   };
 
@@ -178,7 +178,7 @@
   const cv = document.getElementById("cv");
   const ctx = cv.getContext("2d", { alpha:false }) || cv.getContext("2d");
 
-  // ④ iOSジェスチャ抑制：canvas 限定
+  // iOSジェスチャ抑制：canvas 限定
   if (IS_IOS) {
     ["gesturestart","gesturechange","gestureend","dblclick"].forEach(t => {
       cv.addEventListener(t, e => e.preventDefault(), { passive:false });
@@ -201,7 +201,6 @@
     !(ax+aw<bx || ax>bx+bw || ay+ah<by || ay>by+bh);
 
   function resizeCanvas(){ cv.width = innerWidth; cv.height = innerHeight; }
-
   function calcU(){ if (innerWidth>=1200) return 7; if (innerWidth>=800) return 6; return 4; }
   function isCoarse(){
     return (window.matchMedia && window.matchMedia("(pointer: coarse)").matches)
@@ -234,9 +233,6 @@
     }
   }
 
-  /* =========================
-     Object Pool (汎用)
-  ========================= */
   class Pool {
     constructor(createFn, resetFn, initial=64){
       this._create = createFn;
@@ -263,9 +259,6 @@
     }
   }
 
-  /* =========================
-     State
-  ========================= */
   class GameState {
     constructor(){
       this.U = calcU();
@@ -297,6 +290,9 @@
       this.playerBottomPx = 70;
       this.px = innerWidth/2;
 
+      // ★追加：発射クールダウン残り（ms）
+      this.shootCd = 0;
+
       this.stars = [];
 
       this.cols = CONFIG.enemy.cols;
@@ -314,9 +310,8 @@
 
       this.hpGrid = [];
 
-      // 敵探索キャッシュ
       this.aliveIds = [];
-      this.aliveIndex = null; // ④ TypedArray
+      this.aliveIndex = null; // TypedArray
       this.aliveStats = { minC:0, maxC:this.cols-1, maxR:this.rows-1, count:0 };
       this.aliveDirty = true;
 
@@ -335,7 +330,6 @@
         row: ["#ff4d4d","#ffb84d","#ffff4d","#4dff4d","#4dd2ff"]
       };
 
-      // ① formationMetrics キャッシュ
       this.fm = { stepX:0, stepY:0, totalW:0, baseY:0, minGapX:0, minGapY:0 };
       this.fmDirty = true;
     }
@@ -369,7 +363,7 @@
       this.shieldW = 8*this.U;
       this.shieldH = 6*this.U;
 
-      this.fmDirty = true; // ①
+      this.fmDirty = true;
     }
 
     resetStars(){
@@ -380,7 +374,6 @@
       }));
     }
 
-    // ① キャッシュ版 formationMetrics
     _computeFormationMetrics(){
       const minGapX = 0.90*this.U, minGapY = 1.10*this.U;
       const stepX = this.enemyW + minGapX;
@@ -400,7 +393,6 @@
       return (this.rows - r) * 10;
     }
 
-    // ③-8 指数カーブ
     enemyProfile(){
       const e = CONFIG.enemy;
       const fireInterval = Math.max(
@@ -445,20 +437,14 @@
     }
   }
 
-  /* =========================
-     Enemy System（キャッシュ化）
-  ========================= */
   class EnemySystem {
-    constructor(state){
-      this.s = state;
-    }
+    constructor(state){ this.s = state; }
 
     _rebuildAliveCache(){
       const s = this.s;
       const total = s.rows * s.cols;
       s.aliveIds.length = 0;
 
-      // ④ TypedArray
       s.aliveIndex = new Int16Array(total);
       s.aliveIndex.fill(-1);
 
@@ -567,9 +553,6 @@
     }
   }
 
-  /* =========================
-     Shield System
-  ========================= */
   class ShieldSystem {
     constructor(state){ this.s = state; }
 
@@ -662,9 +645,6 @@
     }
   }
 
-  /* =========================
-     Projectile System
-  ========================= */
   class ProjectileSystem {
     constructor(state, enemySystem, shieldSystem){
       this.s = state;
@@ -695,17 +675,24 @@
       }
     }
 
+    // ★変更：発射クールダウンをチェック
     shootPlayerOnce(){
       const s = this.s;
       if(s.paused) return;
       if(s.ready || s.clearing || s.over) return;
+
+      // クールダウン中は発射しない
+      if(s.shootCd > 0) return;
+
+      // 発射したらクールダウン開始
+      s.shootCd = CONFIG.player.shootCooldownMs;
+
       const b = this.playerBullets.acquire();
       b.x = s.px - s.BW/2;
       b.y = s.playerTopY();
       b.v = -10;
     }
 
-    // ①：fm を受け取って再計算しない
     enemyShoot(fm){
       const s = this.s;
       if(s.paused) return;
@@ -762,9 +749,6 @@
     }
   }
 
-  /* =========================
-     Collision System
-  ========================= */
   class CollisionSystem {
     constructor(state, enemies, shields, projectiles){
       this.s = state;
@@ -828,13 +812,12 @@
       }, 900);
     }
 
-    // ①：fm を受け取って使い回す
     detect(fm){
       const s = this.s;
       if(s.paused) return;
       if(s.hitStop > 0) return;
 
-      // ①：敵がシールドに触れている間の削り判定を軽量化
+      // 敵がシールドに触れている間の削り判定を軽量化
       s.shieldContactTick++;
       if(s.shieldContactTick % s.shieldContactEvery === 0 && s.shieldBoxes.length && s.aliveIds.length){
 
@@ -843,7 +826,6 @@
         const enemyTop = s.fy;
         const enemyBottom = s.fy + maxAliveR * fm.stepY + s.enemyH;
 
-        // 縦方向で遠いなら一括スキップ（①）
         let anyShieldInBand = false;
         const slack = CONFIG.shield.contactYSlack;
         for(const box of s.shieldBoxes){
@@ -857,11 +839,8 @@
           const aliveIds = s.aliveIds;
 
           for(const box of s.shieldBoxes){
-            // 縦方向でこのシールドが敵帯と離れてたらスキップ（①）
             if(box.y > enemyBottom + slack || (box.y + box.h) < enemyTop - slack) continue;
 
-            // 列範囲で絞る（①）
-            // box の x 範囲から、隊列座標系の列index範囲を推定
             const cMin = clamp(Math.floor((box.x - s.fx) / fm.stepX) - 1, 0, s.cols-1);
             const cMax = clamp(Math.floor(((box.x + box.w) - s.fx) / fm.stepX) + 1, 0, s.cols-1);
 
@@ -872,7 +851,7 @@
               const r = (id / s.cols) | 0;
               const c = id - r*s.cols;
 
-              if(c < cMin || c > cMax) continue; // ① 早期continue
+              if(c < cMin || c > cMax) continue;
 
               const ex = s.fx + c*fm.stepX;
               const ey = s.fy + r*fm.stepY;
@@ -1024,9 +1003,6 @@
     }
   }
 
-  /* =========================
-     GameLogic
-  ========================= */
   class GameLogic {
     constructor(state, enemies, shields, projectiles, collisions){
       this.s = state;
@@ -1069,6 +1045,9 @@
       s.invincible = 0;
       s.safeTimer = 0;
 
+      // ★追加：クールダウン初期化
+      s.shootCd = 0;
+
       s.over = false;
       s.clearing = false;
 
@@ -1100,6 +1079,9 @@
         return;
       }
 
+      // ★追加：射撃クールダウンを減算
+      if(s.shootCd > 0) s.shootCd = Math.max(0, s.shootCd - dt);
+
       for(const st of s.stars){
         st.y += st.s * (dt*0.06);
         if(st.y > innerHeight){
@@ -1118,11 +1100,9 @@
       }
       s.clampPlayer();
 
-      // enemy movement (スイープ用の前回位置)
       s.prevFx = s.fx;
       s.prevFy = s.fy;
 
-      // ①：fm を使い回す
       const fm = s.getFM();
 
       const remaining = Math.max(1, this.enemies.countAlive());
@@ -1136,7 +1116,6 @@
 
       const e = CONFIG.enemy;
 
-      // 速度調整（元ロジックを CONFIG 化）
       const t = 1 - ratio;
       const curve = Math.pow(t, e.moveCurvePow);
       let moveInterval = e.moveBaseInterval * (1 - curve) + e.moveMinInterval * curve;
@@ -1216,7 +1195,7 @@
         s.enemyShootTick++;
         if(s.enemyShootTick >= prof.fireInterval){
           s.enemyShootTick = 0;
-          this.pj.enemyShoot(fm); // ①
+          this.pj.enemyShoot(fm);
         }
       }
 
@@ -1224,9 +1203,6 @@
     }
   }
 
-  /* =========================
-     Renderer
-  ========================= */
   class Renderer {
     constructor(state, projectiles){
       this.s = state;
@@ -1234,7 +1210,7 @@
     }
     render(){
       const s = this.s;
-      const fm = s.getFM(); // ① 使い回し（Renderer側でも）
+      const fm = s.getFM();
 
       ctx.fillStyle="#000";
       ctx.fillRect(0,0,innerWidth,innerHeight);
@@ -1288,9 +1264,6 @@
     }
   }
 
-  /* =========================
-     Input
-  ========================= */
   const state = new GameState();
   const enemies = new EnemySystem(state);
   const shields = new ShieldSystem(state);
@@ -1381,6 +1354,7 @@
     if(e.code==="ArrowLeft") state.holdL=true;
     if(e.code==="ArrowRight") state.holdR=true;
 
+    // キーボード側もクールダウンで制限されます（shootPlayerOnce 内）
     if(e.code==="KeyA" && state.playerCanShoot){
       state.playerCanShoot = false;
       projectiles.shootPlayerOnce();
@@ -1435,7 +1409,7 @@
     shootBtn.blur();
     if(document.activeElement) document.activeElement.blur();
 
-    projectiles.shootPlayerOnce();
+    projectiles.shootPlayerOnce(); // ★クールダウンで制限
 
     e.preventDefault();
     e.stopPropagation();
@@ -1471,7 +1445,6 @@
 
       shields.relayoutShields();
 
-      // ① キャッシュ更新してから再配置
       const fm = state.getFM();
       state.fx = (innerWidth - fm.totalW)/2;
       state.fy = fm.baseY;
@@ -1485,7 +1458,6 @@
     const dt = Math.min(34, now - (loop._last || now));
     loop._last = now;
 
-    // ①：このフレームの fm を1回取得して下へ渡す
     const fm = state.getFM();
 
     logic.update(dt);
