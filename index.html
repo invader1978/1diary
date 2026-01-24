@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport"
   content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-<title>Invader Stable v7 (Mobile Single Shot / ULTRA FAST)</title>
+<title>Invader Stable v8 (Mobile Single Shot / FAST + Pools + Cached Enemies)</title>
 <style>
   html,body{
     margin:0;padding:0;background:#000;overflow:hidden;
@@ -114,6 +114,14 @@
 (() => {
   "use strict";
 
+  /* =========================================================
+     v8 改修内容（このファイル内で完結）
+     1) 敵探索のキャッシュ化（aliveIds / aliveStats を保持、必要時のみ再計算）
+     2) 弾・爆発のオブジェクトプール（GC負荷低減）
+     3) 最後の1体の速度を現実的に（運ゲー回避）
+     4) アーキテクチャ整理（State / Systems / Renderer に分割）
+  ========================================================= */
+
   const UA = navigator.userAgent || "";
   const IS_IOS = /iP(hone|ad|od)/.test(UA);
 
@@ -175,66 +183,126 @@
     }
   }
 
-  const Game = {
-    U: calcU(),
-    isMobile: isCoarse(),
+  /* =========================
+     Object Pool (汎用)
+  ========================= */
+  class Pool {
+    constructor(createFn, resetFn, initial=64){
+      this._create = createFn;
+      this._reset = resetFn || (()=>{});
+      this._free = [];
+      this._active = [];
+      for(let i=0;i<initial;i++) this._free.push(this._create());
+    }
+    acquire(){
+      const o = this._free.length ? this._free.pop() : this._create();
+      this._active.push(o);
+      return o;
+    }
+    releaseAt(i){
+      const o = this._active[i];
+      // swap-remove
+      this._active[i] = this._active[this._active.length-1];
+      this._active.pop();
+      this._reset(o);
+      this._free.push(o);
+    }
+    get active(){ return this._active; }
+    clear(){
+      for(let i=this._active.length-1;i>=0;i--){
+        this.releaseAt(i);
+      }
+    }
+  }
 
-    shipW:0, shipH:0, enemyW:0, enemyH:0, shieldW:0, shieldH:0,
+  /* =========================
+     State (ゲームの状態)
+  ========================= */
+  class GameState {
+    constructor(){
+      this.U = calcU();
+      this.isMobile = isCoarse();
 
-    score:0, wave:1, life:3,
+      this.shipW = 0; this.shipH = 0;
+      this.enemyW = 0; this.enemyH = 0;
+      this.shieldW = 0; this.shieldH = 0;
 
-    ready:true, clearing:false, over:false, paused:false,
-    hitStop:0,
-    _pendingGameOver:false,
-    invincible:0, safeTimer:0,
+      this.score = 0;
+      this.wave = 1;
+      this.life = 3;
 
-    holdL:false, holdR:false,
-    playerCanShoot:true,
+      this.ready = true;
+      this.clearing = false;
+      this.over = false;
+      this.paused = false;
 
-    playerBottomPx:70,
-    px: innerWidth/2,
+      this.hitStop = 0;
+      this._pendingGameOver = false;
 
-    stars: [],
+      this.invincible = 0;
+      this.safeTimer = 0;
 
-    cols:11, rows:5,
-    fx:0, fy:0, dir:1,
-    prevFx:0, prevFy:0,
-    enemyInitialCount:0,
-    enemyFrame:0, enemyAnimTick:0, enemyShootTick:0,
-    moveAcc:0, wallPause:0,
+      this.holdL = false;
+      this.holdR = false;
+      this.playerCanShoot = true;
 
-    hpGrid: [],
+      this.playerBottomPx = 70;
+      this.px = innerWidth/2;
 
-    shields: [],
-    shieldBoxes: [],
+      this.stars = [];
 
-    // ★敵がシールドに触れている間の「少しずつ削る」用
-    shieldContactTick: 0,
-    shieldContactEvery: 3, // この回数に1回だけ削る（小さいほど早く削れる）
+      this.cols = 11;
+      this.rows = 5;
 
-    bullets: [],
-    ebullets: [],
-    booms: [],
+      this.fx = 0; this.fy = 0; this.dir = 1;
+      this.prevFx = 0; this.prevFy = 0;
 
-    BW:4, BH:10,
+      this.enemyInitialCount = 0;
+      this.enemyFrame = 0;
+      this.enemyAnimTick = 0;
+      this.enemyShootTick = 0;
+      this.moveAcc = 0;
+      this.wallPause = 0;
 
-    colors: {
-      shield: () => "#ff3333",
-      player: () => "#44ff88",
-      row: ["#ff4d4d","#ffb84d","#ffff4d","#4dff4d","#4dd2ff"]
-    },
+      // hpGrid はそのまま維持（描画・判定に便利）
+      this.hpGrid = [];
+
+      // 敵探索キャッシュ
+      // aliveIds: 生存敵の id (r*cols+c) の配列
+      // aliveIndex: id -> aliveIds 内の index（削除をO(1)）
+      // aliveStats: minC/maxC/maxR/count（壁判定など）
+      this.aliveIds = [];
+      this.aliveIndex = [];
+      this.aliveStats = { minC:0, maxC:this.cols-1, maxR:this.rows-1, count:0 };
+      this.aliveDirty = true; // true の時のみ stats を再計算
+
+      this.shields = [];
+      this.shieldBoxes = [];
+
+      this.shieldContactTick = 0;
+      this.shieldContactEvery = 3;
+
+      this.BW = 4;
+      this.BH = 10;
+
+      this.colors = {
+        shield: () => "#ff3333",
+        player: () => "#44ff88",
+        row: ["#ff4d4d","#ffb84d","#ffff4d","#4dff4d","#4dd2ff"]
+      };
+    }
 
     updateLifeHud(){
       lifeEl.textContent = "❤️".repeat(Math.max(0, this.life));
-    },
+    }
 
     playerTopY(){
       return innerHeight - this.playerBottomPx - this.shipH;
-    },
+    }
 
     clampPlayer(){
       this.px = clamp(this.px, this.shipW/2, innerWidth - this.shipW/2);
-    },
+    }
 
     recalcSizes(){
       this.shipW = SHIP[0].length * this.U;
@@ -252,7 +320,7 @@
 
       this.shieldW = 8*this.U;
       this.shieldH = 6*this.U;
-    },
+    }
 
     resetStars(){
       this.stars = [...Array(120)].map(() => ({
@@ -260,7 +328,7 @@
         y:Math.random()*innerHeight,
         s:0.6+Math.random()*1.2
       }));
-    },
+    }
 
     formationMetrics(){
       const minGapX = 0.90*this.U, minGapY = 1.10*this.U;
@@ -269,58 +337,24 @@
       const totalW = this.cols*this.enemyW + (this.cols-1)*minGapX;
       const baseY = Math.max(90, innerHeight*0.22);
       return { stepX, stepY, totalW, baseY };
-    },
-
-    countAlive(){
-      let n=0;
-      for(let r=0;r<this.rows;r++) for(let c=0;c<this.cols;c++) if(this.hpGrid[r][c] > 0) n++;
-      return n;
-    },
+    }
 
     rowKillScore(r){
       return (this.rows - r) * 10;
-    },
+    }
 
     enemyProfile(){
       const fireInterval = Math.max(22, Math.floor(140 - (this.wave-1) * 8));
       const maxBullets = Math.min(12, 2 + Math.floor((this.wave-1) / 4));
       const burst = Math.min(3, 1 + Math.floor((this.wave-1) / 6));
       return { fireInterval, maxBullets, burst };
-    },
-
-    spawnEnemies(){
-      this.cols = 11; this.rows = 5;
-      const hp2 = (this.wave >= 4);
-
-      this.hpGrid = Array.from({length:this.rows}, () =>
-        Array.from({length:this.cols}, () => 1)
-      );
-
-      if (hp2) {
-        for (let r=0;r<Math.min(2,this.rows);r++){
-          for (let c=0;c<this.cols;c++) this.hpGrid[r][c] = 2;
-        }
-      }
-
-      const { totalW, baseY } = this.formationMetrics();
-      this.fx = (innerWidth - totalW)/2;
-      this.fy = baseY;
-      this.dir = 1;
-
-      this.enemyInitialCount = this.rows*this.cols;
-      this.moveAcc = 0;
-      this.wallPause = 0;
-
-      this.enemyFrame = 0;
-      this.enemyAnimTick = 0;
-      this.enemyShootTick = 0;
-    },
+    }
 
     buildShieldBits(){
       const h = SHIELD.length, w = SHIELD[0].length;
       const bits = Array.from({length:h}, (_,r)=>Array.from({length:w},(_,c)=>SHIELD[r][c]==="1"));
       return {bits,w,h};
-    },
+    }
 
     computeShieldLayout(){
       const topMin = 40;
@@ -340,48 +374,186 @@
 
       const xs = [0.2,0.4,0.6,0.8];
       return xs.map(v => ({ x: innerWidth * v - this.shieldW/2, y }));
-    },
+    }
+  }
+
+  /* =========================
+     Enemy System（キャッシュ化）
+  ========================= */
+  class EnemySystem {
+    constructor(state){
+      this.s = state;
+    }
+
+    _rebuildAliveCache(){
+      const s = this.s;
+      const total = s.rows * s.cols;
+      s.aliveIds.length = 0;
+      s.aliveIndex = Array(total).fill(-1);
+
+      for(let r=0;r<s.rows;r++){
+        for(let c=0;c<s.cols;c++){
+          if(s.hpGrid[r][c] > 0){
+            const id = r*s.cols + c;
+            s.aliveIndex[id] = s.aliveIds.length;
+            s.aliveIds.push(id);
+          }
+        }
+      }
+      s.aliveDirty = true;
+      this._refreshAliveStatsIfNeeded();
+      s.enemyInitialCount = s.aliveIds.length;
+    }
+
+    _refreshAliveStatsIfNeeded(){
+      const s = this.s;
+      if(!s.aliveDirty) return;
+      s.aliveDirty = false;
+
+      let minC = s.cols, maxC = -1, maxR = -1;
+      for(let i=0;i<s.aliveIds.length;i++){
+        const id = s.aliveIds[i];
+        const r = (id / s.cols) | 0;
+        const c = id - r*s.cols;
+        if(c < minC) minC = c;
+        if(c > maxC) maxC = c;
+        if(r > maxR) maxR = r;
+      }
+      if(maxC < 0){
+        minC = 0; maxC = s.cols-1; maxR = s.rows-1;
+      }
+      s.aliveStats = { minC, maxC, maxR, count: s.aliveIds.length };
+    }
+
+    spawnEnemies(){
+      const s = this.s;
+      s.cols = 11; s.rows = 5;
+      const hp2 = (s.wave >= 4);
+
+      s.hpGrid = Array.from({length:s.rows}, () =>
+        Array.from({length:s.cols}, () => 1)
+      );
+
+      if (hp2) {
+        for (let r=0;r<Math.min(2,s.rows);r++){
+          for (let c=0;c<s.cols;c++) s.hpGrid[r][c] = 2;
+        }
+      }
+
+      const { totalW, baseY } = s.formationMetrics();
+      s.fx = (innerWidth - totalW)/2;
+      s.fy = baseY;
+      s.dir = 1;
+
+      s.moveAcc = 0;
+      s.wallPause = 0;
+
+      s.enemyFrame = 0;
+      s.enemyAnimTick = 0;
+      s.enemyShootTick = 0;
+
+      this._rebuildAliveCache();
+    }
+
+    // kill 処理：O(1)で aliveIds から除去
+    onEnemyDamagedOrKilled(r,c){
+      const s = this.s;
+      if(s.hpGrid[r][c] > 0) return;
+
+      const id = r*s.cols + c;
+      const idx = s.aliveIndex[id];
+      if(idx < 0) return;
+
+      const lastId = s.aliveIds[s.aliveIds.length-1];
+      s.aliveIds[idx] = lastId;
+      s.aliveIndex[lastId] = idx;
+      s.aliveIds.pop();
+      s.aliveIndex[id] = -1;
+
+      s.aliveDirty = true;
+    }
+
+    countAlive(){
+      return this.s.aliveIds.length;
+    }
+
+    randomAliveRC(){
+      const s = this.s;
+      const n = s.aliveIds.length;
+      if(!n) return null;
+      const id = s.aliveIds[(Math.random()*n)|0];
+      const r = (id / s.cols) | 0;
+      const c = id - r*s.cols;
+      return {r,c};
+    }
+
+    updateAnim(){
+      const s = this.s;
+      s.enemyAnimTick++;
+      if(s.enemyAnimTick >= 28){
+        s.enemyAnimTick = 0;
+        s.enemyFrame = 1 - s.enemyFrame;
+      }
+    }
+
+    getAliveStats(){
+      this._refreshAliveStatsIfNeeded();
+      return this.s.aliveStats;
+    }
+  }
+
+  /* =========================
+     Shield System（現状維持）
+  ========================= */
+  class ShieldSystem {
+    constructor(state){
+      this.s = state;
+    }
 
     spawnShields(){
-      this.shields.length = 0;
-      const proto = this.buildShieldBits();
-      const layout = this.computeShieldLayout();
+      const s = this.s;
+      s.shields.length = 0;
+      const proto = s.buildShieldBits();
+      const layout = s.computeShieldLayout();
       for (let i=0;i<layout.length;i++){
         const {x,y} = layout[i];
         const bits = proto.bits.map(row=>row.slice());
-        this.shields.push({x,y,bits,w:proto.w,h:proto.h});
+        s.shields.push({x,y,bits,w:proto.w,h:proto.h});
       }
       this.rebuildShieldBoxes();
-    },
+    }
 
     relayoutShields(){
-      if(!this.shields.length){
+      const s = this.s;
+      if(!s.shields.length){
         this.spawnShields();
         return;
       }
-      const layout = this.computeShieldLayout();
-      for(let i=0;i<this.shields.length && i<layout.length;i++){
-        this.shields[i].x = layout[i].x;
-        this.shields[i].y = layout[i].y;
+      const layout = s.computeShieldLayout();
+      for(let i=0;i<s.shields.length && i<layout.length;i++){
+        s.shields[i].x = layout[i].x;
+        s.shields[i].y = layout[i].y;
       }
       this.rebuildShieldBoxes();
-    },
+    }
 
     rebuildShieldBoxes(){
-      this.shieldBoxes = this.shields.map(s => ({
-        x:s.x, y:s.y, w:this.shieldW, h:this.shieldH,
-        ref:s
+      const s = this.s;
+      s.shieldBoxes = s.shields.map(sh => ({
+        x:sh.x, y:sh.y, w:s.shieldW, h:s.shieldH,
+        ref:sh
       }));
-    },
+    }
 
     shieldHitAndDamage(bx,by,bw,bh){
-      if (!this.shields.length) return false;
+      const s = this.s;
+      if (!s.shields.length) return false;
 
       const cx = bx + bw/2;
       let best = null;
       let bestD = Infinity;
-      for (let i=0;i<this.shieldBoxes.length;i++){
-        const box = this.shieldBoxes[i];
+      for (let i=0;i<s.shieldBoxes.length;i++){
+        const box = s.shieldBoxes[i];
         const mid = box.x + box.w/2;
         const d = Math.abs(cx - mid);
         if (d < bestD) { bestD = d; best = box; }
@@ -389,38 +561,36 @@
 
       const tryDamage = (box) => {
         if(!aabb(bx,by,bw,bh, box.x,box.y, box.w,box.h)) return false;
-        const s = box.ref;
+        const sh = box.ref;
 
-        const rx = clamp(Math.floor(((bx+bw/2)-s.x)/this.U), 0, s.w-1);
-        const ry = clamp(Math.floor(((by+bh/2)-s.y)/this.U), 0, s.h-1);
+        const rx = clamp(Math.floor(((bx+bw/2)-sh.x)/s.U), 0, sh.w-1);
+        const ry = clamp(Math.floor(((by+bh/2)-sh.y)/s.U), 0, sh.h-1);
 
         const cand=[];
         for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
           const cx=rx+dx, cy=ry+dy;
-          if(cy>=0&&cy<s.h&&cx>=0&&cx<s.w&&s.bits[cy][cx]) cand.push([cy,cx]);
+          if(cy>=0&&cy<sh.h&&cx>=0&&cx<sh.w&&sh.bits[cy][cx]) cand.push([cy,cx]);
         }
         if(cand.length){
           const [cy,cx]=cand[(Math.random()*cand.length)|0];
-          s.bits[cy][cx]=false;
+          sh.bits[cy][cx]=false;
         }
         return true;
       };
 
       if (best && tryDamage(best)) return true;
 
-      for (let i=0;i<this.shieldBoxes.length;i++){
-        const box = this.shieldBoxes[i];
+      for (let i=0;i<s.shieldBoxes.length;i++){
+        const box = s.shieldBoxes[i];
         if (box === best) continue;
         if (tryDamage(box)) return true;
       }
       return false;
-    },
+    }
 
-    // ★敵がシールドに接触した時：ランダムに少しずつ削る
     damageShieldRandom(shield, hits){
       hits = Math.max(0, hits|0);
       if(!hits) return;
-      // なるべく「残っているブロック」を消す
       let attempts = hits * 10;
       while(hits > 0 && attempts-- > 0){
         const r = (Math.random() * shield.h) | 0;
@@ -430,549 +600,649 @@
           hits--;
         }
       }
-    },
+    }
+  }
+
+  /* =========================
+     Projectile System（プール化）
+  ========================= */
+  class ProjectileSystem {
+    constructor(state, enemySystem, shieldSystem, effects){
+      this.s = state;
+      this.enemies = enemySystem;
+      this.shields = shieldSystem;
+      this.fx = effects;
+
+      const resetBullet = (b)=>{ b.x=0; b.y=0; b.v=0; };
+      const resetBoom = (p)=>{ p.x=0; p.y=0; p.vx=0; p.vy=0; p.t=0; };
+
+      // ざっくり初期容量（端末により増える）
+      this.playerBullets = new Pool(
+        ()=>({x:0,y:0,v:0}),
+        resetBullet,
+        32
+      );
+      this.enemyBullets = new Pool(
+        ()=>({x:0,y:0,v:0}),
+        resetBullet,
+        64
+      );
+      this.booms = new Pool(
+        ()=>({x:0,y:0,vx:0,vy:0,t:0}),
+        resetBoom,
+        128
+      );
+    }
+
+    clearAll(){
+      this.playerBullets.clear();
+      this.enemyBullets.clear();
+      this.booms.clear();
+    }
 
     boom(x,y){
       for(let i=0;i<10;i++){
-        this.booms.push({x,y,vx:(Math.random()-.5)*5,vy:(Math.random()-.5)*5,t:18});
+        const p = this.booms.acquire();
+        p.x = x; p.y = y;
+        p.vx = (Math.random()-.5)*5;
+        p.vy = (Math.random()-.5)*5;
+        p.t = 18;
       }
-    },
+    }
 
-    shootOnce(){
-      if(this.paused) return;
-      if(this.ready || this.clearing || this.over) return;
-      this.bullets.push({x:this.px - this.BW/2, y:this.playerTopY(), v:-10});
-    },
+    shootPlayerOnce(){
+      const s = this.s;
+      if(s.paused) return;
+      if(s.ready || s.clearing || s.over) return;
+      const b = this.playerBullets.acquire();
+      b.x = s.px - s.BW/2;
+      b.y = s.playerTopY();
+      b.v = -10;
+    }
 
     enemyShoot(){
-      if(this.paused) return;
-      if(this.ready || this.clearing || this.over) return;
+      const s = this.s;
+      if(s.paused) return;
+      if(s.ready || s.clearing || s.over) return;
 
-      const prof = this.enemyProfile();
-      if(this.ebullets.length >= prof.maxBullets) return;
+      const prof = s.enemyProfile();
+      if(this.enemyBullets.active.length >= prof.maxBullets) return;
 
-      const alive = [];
-      for(let r=0;r<this.rows;r++)for(let c=0;c<this.cols;c++){
-        if(this.hpGrid[r][c] > 0) alive.push([r,c]);
-      }
-      if(!alive.length) return;
+      const pick = this.enemies.randomAliveRC();
+      if(!pick) return;
 
-      const [r,c] = alive[(Math.random()*alive.length)|0];
-      const {stepX,stepY} = this.formationMetrics();
-      const ex = this.fx + c*stepX, ey = this.fy + r*stepY;
+      const {r,c} = pick;
+      const {stepX,stepY} = s.formationMetrics();
+      const ex = s.fx + c*stepX, ey = s.fy + r*stepY;
 
-      const baseV = (this.isMobile ? 5 : 7);
-      const add = Math.min(3, (this.wave-1) * 0.18);
+      const baseV = (s.isMobile ? 5 : 7);
+      const add = Math.min(3, (s.wave-1) * 0.18);
       const v = baseV + add;
 
-      const shots = Math.min(prof.burst, prof.maxBullets - this.ebullets.length);
+      const shots = Math.min(prof.burst, prof.maxBullets - this.enemyBullets.active.length);
       for(let k=0;k<shots;k++){
-        const spread = (k - (shots-1)/2) * (this.BW + 2);
-        this.ebullets.push({x:ex + this.enemyW/2 - this.BW/2 + spread, y:ey + this.enemyH, v});
+        const spread = (k - (shots-1)/2) * (s.BW + 2);
+        const b = this.enemyBullets.acquire();
+        b.x = ex + s.enemyW/2 - s.BW/2 + spread;
+        b.y = ey + s.enemyH;
+        b.v = v;
       }
-    },
-
-    showReady(){
-      clearTimeout(window._msgTimer);
-      if(!this.paused) msgEl.textContent = "";
-      this.ready = true;
-      this.safeTimer = Math.floor(this.wave * 0.5 * 60);
-      window._msgTimer = setTimeout(() => {
-        if(!this.over && !this.paused) msgEl.textContent = "";
-        this.ready = false;
-      }, 900);
-    },
-
-    nextWave(){
-      this.clearing = true;
-      if(!this.paused) msgEl.textContent = "CLEAR!";
-      setTimeout(() => {
-        if(this.paused) return;
-        msgEl.textContent = "";
-        this.wave++;
-        waveEl.textContent = this.wave;
-        this.clearing = false;
-        this.spawnEnemies();
-        this.spawnShields();
-        this.showReady();
-      }, 900);
-    },
-
-    gameOver(){
-      if(this.over) return;
-      this.over = true;
-      this.paused = false;
-      pauseBtn.textContent = "PAUSE";
-      msgEl.innerHTML = "GAME OVER<br>Tap or Enter";
-      this.holdL = false;
-      this.holdR = false;
-    },
-
-
-    // ★体当たり演出：ヒットした瞬間に「ピタ止め」してからGAME OVERを出す
-    triggerRamming(contactFy){
-      if(this.over) return;
-      this.fy = contactFy;
-
-      // ヒット停止（ms）
-      this.hitStop = 200;
-
-      if(this._pendingGameOver) return;
-      this._pendingGameOver = true;
-
-      setTimeout(() => {
-        this.hitStop = 0;
-        this._pendingGameOver = false;
-        this.gameOver();
-      }, 200);
-    },
-
-    msgBeforePause: "",
-    setPaused(next){
-      if(this.over) return;
-      this.paused = !!next;
-      pauseBtn.textContent = this.paused ? "RESUME" : "PAUSE";
-      if(this.paused){
-        this.msgBeforePause = msgEl.innerHTML;
-        msgEl.textContent = "PAUSED";
-        this.holdL = false; this.holdR = false;
-        Input.stickReset();
-        this.playerCanShoot = true;
-      }else{
-        if(this.msgBeforePause && this.msgBeforePause !== "PAUSED") msgEl.innerHTML = this.msgBeforePause;
-        else msgEl.textContent = "";
-        this.msgBeforePause = "";
-      }
-    },
-
-    togglePause(){
-      this.setPaused(!this.paused);
-    },
-
-    reset(){
-      this.bullets.length = 0;
-      this.ebullets.length = 0;
-      this.booms.length = 0;
-
-      this.shieldContactTick = 0;
-
-      msgEl.textContent = "";
-      this.score = 0;
-      this.wave = 1;
-      this.life = 3;
-
-      this.invincible = 0;
-      this.safeTimer = 0;
-
-      this.over = false;
-      this.clearing = false;
-
-      this.paused = false;
-      pauseBtn.textContent = "PAUSE";
-      this.msgBeforePause = "";
-
-      this.playerCanShoot = true;
-
-      this.holdL = false; this.holdR = false;
-
-      scoreEl.textContent = "0";
-      waveEl.textContent = "1";
-      this.updateLifeHud();
-
-      this.px = innerWidth/2;
-      this.clampPlayer();
-
-      this.spawnEnemies();
-      this.spawnShields();
-      this.showReady();
-    },
+    }
 
     update(dt){
-      if(this.paused) return;
-
-      // ★体当たりが見えるようにヒット停止
-      if(this.hitStop > 0){
-        this.hitStop -= dt;
-        return;
-      }
-
-      for(const s of this.stars){
-        s.y += s.s * (dt*0.06);
-        if(s.y > innerHeight){
-          s.y = 0;
-          s.x = Math.random() * innerWidth;
+      const s = this.s;
+      const pbs = this.playerBullets.active;
+      for(let i=pbs.length-1;i>=0;i--){
+        const b = pbs[i];
+        b.y += b.v*(dt*0.06);
+        if(b.y < -20){
+          this.playerBullets.releaseAt(i);
         }
       }
 
-      if(this.invincible > 0) this.invincible--;
-      if(this.safeTimer > 0) this.safeTimer--;
-
-      const sp = this.isMobile ? 3 : 4;
-      if(!this.ready && !this.clearing && !this.over){
-        if(this.holdL) this.px -= sp;
-        if(this.holdR) this.px += sp;
+      const ebs = this.enemyBullets.active;
+      for(let i=ebs.length-1;i>=0;i--){
+        const b = ebs[i];
+        b.y += b.v*(dt*0.06);
+        if(b.y > innerHeight + 30){
+          this.enemyBullets.releaseAt(i);
+        }
       }
-      this.clampPlayer();
 
-      // ★敵の高速移動すり抜け対策：移動前の位置を保存
-      this.prevFx = this.fx;
-      this.prevFy = this.fy;
+      const booms = this.booms.active;
+      for(let i=booms.length-1;i>=0;i--){
+        const p = booms[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.t--;
+        if(p.t <= 0){
+          this.booms.releaseAt(i);
+        }
+      }
+    }
+  }
 
-      const { stepX, stepY } = this.formationMetrics();
-      const remaining = Math.max(1, this.countAlive());
-      const initialCount = this.enemyInitialCount || remaining;
-      const ratio = remaining / initialCount;
+  /* =========================
+     Collision System
+  ========================= */
+  class CollisionSystem {
+    constructor(state, enemies, shields, projectiles){
+      this.s = state;
+      this.enemies = enemies;
+      this.shields = shields;
+      this.pj = projectiles;
+    }
 
-      // 生存している敵の左右端（列）を算出（生存クラスタで壁判定するため）
-      let minAliveC = this.cols, maxAliveC = -1, maxAliveR = -1;
-      for(let rr=0; rr<this.rows; rr++){
-        for(let cc=0; cc<this.cols; cc++){
-          if(this.hpGrid[rr][cc] > 0){
-            if(cc < minAliveC) minAliveC = cc;
-            if(cc > maxAliveC) maxAliveC = cc;
-            if(rr > maxAliveR) maxAliveR = rr;
+    // 体当たり演出：ヒットした瞬間に「ピタ止め」してからGAME OVER
+    triggerRamming(contactFy){
+      const s = this.s;
+      if(s.over) return;
+      s.fy = contactFy;
+
+      s.hitStop = 200;
+      if(s._pendingGameOver) return;
+      s._pendingGameOver = true;
+
+      setTimeout(() => {
+        s.hitStop = 0;
+        s._pendingGameOver = false;
+        this.gameOver();
+      }, 200);
+    }
+
+    gameOver(){
+      const s = this.s;
+      if(s.over) return;
+      s.over = true;
+      s.paused = false;
+      pauseBtn.textContent = "PAUSE";
+      msgEl.innerHTML = "GAME OVER<br>Tap or Enter";
+      s.holdL = false;
+      s.holdR = false;
+    }
+
+    nextWave(){
+      const s = this.s;
+      s.clearing = true;
+      if(!s.paused) msgEl.textContent = "CLEAR!";
+      setTimeout(() => {
+        if(s.paused) return;
+        msgEl.textContent = "";
+        s.wave++;
+        waveEl.textContent = s.wave;
+        s.clearing = false;
+        this.enemies.spawnEnemies();
+        this.shields.spawnShields();
+        this.showReady();
+      }, 900);
+    }
+
+    showReady(){
+      const s = this.s;
+      clearTimeout(window._msgTimer);
+      if(!s.paused) msgEl.textContent = "";
+      s.ready = true;
+      s.safeTimer = Math.floor(s.wave * 0.5 * 60);
+      window._msgTimer = setTimeout(() => {
+        if(!s.over && !s.paused) msgEl.textContent = "";
+        s.ready = false;
+      }, 900);
+    }
+
+    detect(){
+      const s = this.s;
+      if(s.paused) return;
+      if(s.hitStop > 0) return;
+
+      // 敵がシールドに触れている間：少しずつ削る（aliveIdsのみで判定）
+      s.shieldContactTick++;
+      if(s.shieldContactTick % s.shieldContactEvery === 0 && s.shieldBoxes.length){
+        const {stepX, stepY} = s.formationMetrics();
+        for(const box of s.shieldBoxes){
+          let contacts = 0;
+          const aliveIds = s.aliveIds;
+          for(let i=0;i<aliveIds.length;i++){
+            const id = aliveIds[i];
+            const r = (id / s.cols) | 0;
+            const c = id - r*s.cols;
+            const ex = s.fx + c*stepX;
+            const ey = s.fy + r*stepY;
+            if(aabb(ex, ey, s.enemyW, s.enemyH, box.x, box.y, box.w, box.h)){
+              contacts++;
+              if(contacts >= 8) break;
+            }
+          }
+          if(contacts > 0){
+            const perEnemy = 3;
+            const hits = Math.min(40, contacts * perEnemy);
+            this.shields.damageShieldRandom(box.ref, hits);
           }
         }
       }
-      if(maxAliveC < 0){ minAliveC = 0; maxAliveC = this.cols - 1; maxAliveR = this.rows - 1; }
+
+      // 敵の体当たり（スイープAABB）… aliveIdsのみ
+      if(!s.over && !s.ready && !s.clearing){
+        const shipX = s.px - s.shipW/2;
+        const shipY = s.playerTopY();
+        const shipW = s.shipW;
+        const shipH = s.shipH;
+
+        const { stepX, stepY } = s.formationMetrics();
+        const fx0 = (typeof s.prevFx === "number") ? s.prevFx : s.fx;
+        const fy0 = (typeof s.prevFy === "number") ? s.prevFy : s.fy;
+
+        const st = this.enemies.getAliveStats();
+        const maxAliveR = st.maxR;
+
+        const aliveIds = s.aliveIds;
+        for(let i=0;i<aliveIds.length;i++){
+          const id = aliveIds[i];
+          const r = (id / s.cols) | 0;
+          const c = id - r*s.cols;
+
+          const exA = fx0 + c*stepX;
+          const eyA = fy0 + r*stepY;
+          const exB = s.fx + c*stepX;
+          const eyB = s.fy + r*stepY;
+
+          const sx = Math.min(exA, exB);
+          const sy = Math.min(eyA, eyB);
+          const sw = Math.max(exA + s.enemyW, exB + s.enemyW) - sx;
+          const sh = Math.max(eyA + s.enemyH, eyB + s.enemyH) - sy;
+
+          if(aabb(sx, sy, sw, sh, shipX, shipY, shipW, shipH)){
+            if(maxAliveR >= 0){
+              const enemyBottom = s.fy + maxAliveR*stepY + s.enemyH;
+              const over = enemyBottom - shipY;
+              if(over > 0) s.fy -= over;
+            }
+
+            const HIT_MS = 260;
+            s.hitStop = Math.max(s.hitStop, HIT_MS);
+
+            if(!s._pendingGameOver){
+              s._pendingGameOver = true;
+              setTimeout(() => {
+                s.hitStop = 0;
+                s._pendingGameOver = false;
+                this.gameOver();
+              }, HIT_MS);
+            }
+            return;
+          }
+        }
+      }
+
+      // 弾 vs シールド
+      const pbs = this.pj.playerBullets.active;
+      for(let i=pbs.length-1;i>=0;i--){
+        const b = pbs[i];
+        if(this.shields.shieldHitAndDamage(b.x,b.y,s.BW,s.BH)) this.pj.playerBullets.releaseAt(i);
+      }
+      const ebs = this.pj.enemyBullets.active;
+      for(let i=ebs.length-1;i>=0;i--){
+        const b = ebs[i];
+        if(this.shields.shieldHitAndDamage(b.x,b.y,s.BW,s.BH)) this.pj.enemyBullets.releaseAt(i);
+      }
+
+      // 敵が自機に体当たり（即オーバー）
+      if(!s.over){
+        const pl = s.px - s.shipW/2;
+        const pt = s.playerTopY();
+        const {stepX, stepY} = s.formationMetrics();
+
+        const aliveIds = s.aliveIds;
+        for(let i=0;i<aliveIds.length;i++){
+          const id = aliveIds[i];
+          const r = (id / s.cols) | 0;
+          const c = id - r*s.cols;
+          const ex = s.fx + c*stepX;
+          const ey = s.fy + r*stepY;
+          if(aabb(ex,ey,s.enemyW,s.enemyH, pl,pt,s.shipW,s.shipH)){
+            s.fy = pt - (r * stepY + s.enemyH);
+            this.triggerRamming(s.fy);
+            return;
+          }
+        }
+      }
+
+      // 自弾 vs 敵
+      const {stepX,stepY} = s.formationMetrics();
+      for(let i=pbs.length-1;i>=0;i--){
+        const b = pbs[i];
+        const c = Math.floor((b.x - s.fx)/stepX);
+        const r = Math.floor((b.y - s.fy)/stepY);
+        if(r>=0 && r<s.rows && c>=0 && c<s.cols && s.hpGrid[r][c] > 0){
+          const ex = s.fx + c*stepX;
+          const ey = s.fy + r*stepY;
+          if(aabb(b.x,b.y,s.BW,s.BH, ex,ey, s.enemyW,s.enemyH)){
+            this.pj.playerBullets.releaseAt(i);
+
+            s.hpGrid[r][c]--;
+            this.pj.boom(ex+s.enemyW/2, ey+s.enemyH/2);
+
+            if(s.hpGrid[r][c] <= 0){
+              this.enemies.onEnemyDamagedOrKilled(r,c);
+
+              s.score += s.rowKillScore(r);
+              scoreEl.textContent = s.score;
+
+              if(this.enemies.countAlive()===0 && !s.over && !s.clearing){
+                this.nextWave();
+                return;
+              }
+            }
+          }
+        }
+      }
+
+      // 敵弾 vs 自機
+      if(!s.over){
+        const pl = s.px - s.shipW/2;
+        const pt = s.playerTopY();
+        for(let i=ebs.length-1;i>=0;i--){
+          const b = ebs[i];
+          if(aabb(b.x,b.y,s.BW,s.BH, pl,pt, s.shipW,s.shipH)){
+            this.pj.enemyBullets.releaseAt(i);
+            if(s.invincible===0 && s.safeTimer===0){
+              s.life--;
+              s.updateLifeHud();
+              this.pj.boom(s.px, pt+s.shipH/2);
+              s.invincible = 60;
+              if(s.life<=0) this.gameOver();
+            }
+          }
+        }
+      }
+    }
+  }
+
+  /* =========================
+     Movement / Wave logic
+  ========================= */
+  class GameLogic {
+    constructor(state, enemies, shields, projectiles, collisions){
+      this.s = state;
+      this.enemies = enemies;
+      this.shields = shields;
+      this.pj = projectiles;
+      this.col = collisions;
+    }
+
+    setPaused(next){
+      const s = this.s;
+      if(s.over) return;
+      s.paused = !!next;
+      pauseBtn.textContent = s.paused ? "RESUME" : "PAUSE";
+      if(s.paused){
+        this._msgBeforePause = msgEl.innerHTML;
+        msgEl.textContent = "PAUSED";
+        s.holdL = false; s.holdR = false;
+        Input.stickReset();
+        s.playerCanShoot = true;
+      }else{
+        if(this._msgBeforePause && this._msgBeforePause !== "PAUSED") msgEl.innerHTML = this._msgBeforePause;
+        else msgEl.textContent = "";
+        this._msgBeforePause = "";
+      }
+    }
+    togglePause(){ this.setPaused(!this.s.paused); }
+
+    reset(){
+      const s = this.s;
+
+      this.pj.clearAll();
+      s.shieldContactTick = 0;
+
+      msgEl.textContent = "";
+      s.score = 0;
+      s.wave = 1;
+      s.life = 3;
+
+      s.invincible = 0;
+      s.safeTimer = 0;
+
+      s.over = false;
+      s.clearing = false;
+
+      s.paused = false;
+      pauseBtn.textContent = "PAUSE";
+      this._msgBeforePause = "";
+
+      s.playerCanShoot = true;
+      s.holdL = false; s.holdR = false;
+
+      scoreEl.textContent = "0";
+      waveEl.textContent = "1";
+      s.updateLifeHud();
+
+      s.px = innerWidth/2;
+      s.clampPlayer();
+
+      this.enemies.spawnEnemies();
+      this.shields.spawnShields();
+      this.col.showReady();
+    }
+
+    update(dt){
+      const s = this.s;
+      if(s.paused) return;
+
+      // ヒット停止
+      if(s.hitStop > 0){
+        s.hitStop -= dt;
+        return;
+      }
+
+      // stars
+      for(const st of s.stars){
+        st.y += st.s * (dt*0.06);
+        if(st.y > innerHeight){
+          st.y = 0;
+          st.x = Math.random() * innerWidth;
+        }
+      }
+
+      if(s.invincible > 0) s.invincible--;
+      if(s.safeTimer > 0) s.safeTimer--;
+
+      // player move
+      const sp = s.isMobile ? 3 : 4;
+      if(!s.ready && !s.clearing && !s.over){
+        if(s.holdL) s.px -= sp;
+        if(s.holdR) s.px += sp;
+      }
+      s.clampPlayer();
+
+      // enemy movement (スイープ用の前回位置)
+      s.prevFx = s.fx;
+      s.prevFy = s.fy;
+
+      const { stepX, stepY } = s.formationMetrics();
+      const remaining = Math.max(1, this.enemies.countAlive());
+      const initialCount = s.enemyInitialCount || remaining;
+      const ratio = remaining / initialCount;
+
+      // stats（壁判定用）
+      const st = this.enemies.getAliveStats();
+      const minAliveC = st.minC;
+      const maxAliveC = st.maxC;
+      const maxAliveR = st.maxR;
 
       /* =========================================================
-         ★ULTRA FAST：序盤から速く、減るほどさらに加速、最後の1体は激速
-         - moveInterval（ms）が小さいほど、ステップ回数が増えて速く見える
-         - stepMoveX も増やして「体感速度」を上げる
+         速度調整（最後の1体を運ゲーにしない）
+         - ベースは速いまま
+         - 最後の1体は 10ms より速くしない（+最低ラインも10ms）
       ========================================================= */
-      const baseInterval = 150;  // 序盤から速い
-      const minInterval  = 10;   // 終盤の限界（小さいほど爆速）
+      const baseInterval = 150;
+      const minInterval  = 12;   // 終盤の限界（全体）
+      const lastOneCap   = 10;   // 最後の1体の上限（これより速くしない）
 
-      const t = 1 - ratio;                 // 0→1（敵が減るほど大）
-      const curve = Math.pow(t, 1.55);     // 小さめで「だんだん早くなる」を強める
+      const t = 1 - ratio;
+      const curve = Math.pow(t, 1.55);
 
       let moveInterval = baseInterval * (1 - curve) + minInterval * curve;
 
-      const waveSpeedMul = 1 / (1 + (this.wave - 1) * 0.06);
+      const waveSpeedMul = 1 / (1 + (s.wave - 1) * 0.06);
       moveInterval *= waveSpeedMul;
 
-      // 残り1体はさらに最速へ（当たりにくいレベル）
-      if (remaining === 1) moveInterval = Math.min(moveInterval, 6);
+      if (remaining === 1) moveInterval = Math.max(moveInterval, lastOneCap);
+      moveInterval = Math.max(10, moveInterval);
 
-      // rAF/環境差で暴走しない最低ライン
-      moveInterval = Math.max(6, moveInterval);
+      // 横移動量：最後の1体だけ少し落とす（当てられる余地を残す）
+      let stepMoveX = 1.35*s.U*(1+(s.wave-1)*0.03);
+      if(remaining === 1) stepMoveX *= 0.90;
 
-      // 1ステップの横移動量を増やして、さらに当たりにくく
-      const stepMoveX = 1.35*this.U*(1+(this.wave-1)*0.03);
+      const stepDown  = 1.6*s.U;
+      const wallPauseMs = 70;
 
-      const stepDown  = 1.6*this.U;
-      const wallPauseMs = 70; // 壁で止まる時間も短く
-
-      if(!this.ready && !this.clearing && !this.over){
-        this.moveAcc += dt;
-        if(this.wallPause > 0){
-          const use = Math.min(this.wallPause, this.moveAcc);
-          this.wallPause -= use;
-          this.moveAcc -= use;
+      if(!s.ready && !s.clearing && !s.over){
+        s.moveAcc += dt;
+        if(s.wallPause > 0){
+          const use = Math.min(s.wallPause, s.moveAcc);
+          s.wallPause -= use;
+          s.moveAcc -= use;
         }
-        while(this.moveAcc >= moveInterval){
-          this.moveAcc -= moveInterval;
+        while(s.moveAcc >= moveInterval){
+          s.moveAcc -= moveInterval;
           const margin = 10;
-          const nextFx = this.fx + this.dir * stepMoveX;
+          const nextFx = s.fx + s.dir * stepMoveX;
 
-          // 生存クラスタ（生き残っている敵の左右端）で壁判定する
           const nextAliveLeft  = nextFx + minAliveC * stepX;
-          const nextAliveRight = nextFx + maxAliveC * stepX + this.enemyW;
+          const nextAliveRight = nextFx + maxAliveC * stepX + s.enemyW;
 
           if (nextAliveRight > innerWidth - margin) {
             const overflow = nextAliveRight - (innerWidth - margin);
-            this.fx = nextFx - overflow;
-            this.dir = -1;
-            this.fy += stepDown;
+            s.fx = nextFx - overflow;
+            s.dir = -1;
+            s.fy += stepDown;
 
-            const playerTop = this.playerTopY();
-            const lowestBottom = this.fy + maxAliveR * stepY + this.enemyH;
+            const playerTop = s.playerTopY();
+            const lowestBottom = s.fy + maxAliveR * stepY + s.enemyH;
             if (lowestBottom >= playerTop) {
-              this.fy = playerTop - (maxAliveR * stepY + this.enemyH);
-              this.triggerRamming(this.fy);
+              s.fy = playerTop - (maxAliveR * stepY + s.enemyH);
+              this.col.triggerRamming(s.fy);
               return;
             }
 
-            this.wallPause = wallPauseMs;
-            this.moveAcc = 0;
+            s.wallPause = wallPauseMs;
+            s.moveAcc = 0;
             break;
 
           } else if (nextAliveLeft < margin) {
             const overflow = margin - nextAliveLeft;
-            this.fx = nextFx + overflow;
-            this.dir = 1;
-            this.fy += stepDown;
+            s.fx = nextFx + overflow;
+            s.dir = 1;
+            s.fy += stepDown;
 
-            const playerTop = this.playerTopY();
-            const lowestBottom = this.fy + maxAliveR * stepY + this.enemyH;
+            const playerTop = s.playerTopY();
+            const lowestBottom = s.fy + maxAliveR * stepY + s.enemyH;
             if (lowestBottom >= playerTop) {
-              this.fy = playerTop - (maxAliveR * stepY + this.enemyH);
-              this.triggerRamming(this.fy);
+              s.fy = playerTop - (maxAliveR * stepY + s.enemyH);
+              this.col.triggerRamming(s.fy);
               return;
             }
 
-            this.wallPause = wallPauseMs;
-            this.moveAcc = 0;
+            s.wallPause = wallPauseMs;
+            s.moveAcc = 0;
             break;
 
           } else {
-            this.fx = nextFx;
+            s.fx = nextFx;
           }
         }
       }
 
-      this.enemyAnimTick++;
-      if(this.enemyAnimTick >= 28){
-        this.enemyAnimTick = 0;
-        this.enemyFrame = 1 - this.enemyFrame;
-      }
+      // enemy anim / shoot
+      this.enemies.updateAnim();
 
-      if(!this.ready && !this.clearing && !this.over){
-        const prof = this.enemyProfile();
-        this.enemyShootTick++;
-        if(this.enemyShootTick >= prof.fireInterval){
-          this.enemyShootTick = 0;
-          this.enemyShoot();
+      if(!s.ready && !s.clearing && !s.over){
+        const prof = s.enemyProfile();
+        s.enemyShootTick++;
+        if(s.enemyShootTick >= prof.fireInterval){
+          s.enemyShootTick = 0;
+          this.pj.enemyShoot();
         }
       }
 
-      for(let i=this.bullets.length-1;i>=0;i--){
-        const b=this.bullets[i];
-        b.y += b.v*(dt*0.06);
-        if(b.y < -20) this.bullets.splice(i,1);
-      }
-      for(let i=this.ebullets.length-1;i>=0;i--){
-        const b=this.ebullets[i];
-        b.y += b.v*(dt*0.06);
-        if(b.y > innerHeight + 30) this.ebullets.splice(i,1);
-      }
+      // projectiles update
+      this.pj.update(dt);
+    }
+  }
 
-      for(let i=this.booms.length-1;i>=0;i--){
-        const p=this.booms[i];
-        p.x += p.vx;
-        p.y += p.vy;
-        p.t--;
-        if(p.t <= 0) this.booms.splice(i,1);
-      }
-    },
-
-    detectCollisions(){
-      if(this.paused) return;
-      if(this.hitStop > 0) return;
-
-      // ★敵がシールドに触れている間は「少しずつ削る」（複数敵なら削れが増える）
-      //   - 毎フレームだと削れ過ぎるので shieldContactEvery 回に1回だけ処理
-      this.shieldContactTick++;
-      if(this.shieldContactTick % this.shieldContactEvery === 0 && this.shieldBoxes.length){
-        const {stepX, stepY} = this.formationMetrics();
-        for(const box of this.shieldBoxes){
-          let contacts = 0;
-
-          // 生存している敵だけで接触数をカウント
-          for(let r=0;r<this.rows;r++){
-            for(let c=0;c<this.cols;c++){
-              if(this.hpGrid[r][c] <= 0) continue;
-              const ex = this.fx + c*stepX;
-              const ey = this.fy + r*stepY;
-              if(aabb(ex, ey, this.enemyW, this.enemyH, box.x, box.y, box.w, box.h)){
-                contacts++;
-                if(contacts >= 8) break;
-              }
-            }
-            if(contacts >= 8) break;
-          }
-
-          if(contacts > 0){
-            // 1体あたりの削れ量（お好みで調整：2〜6くらいが見やすい）
-            const perEnemy = 3;
-            const hits = Math.min(40, contacts * perEnemy);
-            this.damageShieldRandom(box.ref, hits);
-          }
-        }
-      }
-
-      // ★敵の体当たり（高速でも通り抜けない：スイープAABB）
-      if(!this.over && !this.ready && !this.clearing){
-        const shipX = this.px - this.shipW/2;
-        const shipY = this.playerTopY();
-        const shipW = this.shipW;
-        const shipH = this.shipH;
-
-        const { stepX, stepY } = this.formationMetrics();
-        const fx0 = (typeof this.prevFx === "number") ? this.prevFx : this.fx;
-        const fy0 = (typeof this.prevFy === "number") ? this.prevFy : this.fy;
-
-        let maxAliveR = -1;
-        for(let rr=0; rr<this.rows; rr++){
-          for(let cc=0; cc<this.cols; cc++){
-            if(this.hpGrid[rr][cc] > 0) maxAliveR = Math.max(maxAliveR, rr);
-          }
-        }
-
-        for(let r=0; r<this.rows; r++){
-          for(let c=0; c<this.cols; c++){
-            if(this.hpGrid[r][c] <= 0) continue;
-
-            const exA = fx0 + c*stepX;
-            const eyA = fy0 + r*stepY;
-            const exB = this.fx + c*stepX;
-            const eyB = this.fy + r*stepY;
-
-            const sx = Math.min(exA, exB);
-            const sy = Math.min(eyA, eyB);
-            const sw = Math.max(exA + this.enemyW, exB + this.enemyW) - sx;
-            const sh = Math.max(eyA + this.enemyH, eyB + this.enemyH) - sy;
-
-            if(aabb(sx, sy, sw, sh, shipX, shipY, shipW, shipH)){
-              if(maxAliveR >= 0){
-                const enemyBottom = this.fy + maxAliveR*stepY + this.enemyH;
-                const over = enemyBottom - shipY;
-                if(over > 0) this.fy -= over;
-              }
-
-              const HIT_MS = 260;
-              this.hitStop = Math.max(this.hitStop, HIT_MS);
-
-              if(!this._pendingGameOver){
-                this._pendingGameOver = true;
-                setTimeout(() => {
-                  this.hitStop = 0;
-                  this._pendingGameOver = false;
-                  this.gameOver();
-                }, HIT_MS);
-              }
-              return;
-            }
-          }
-        }
-      }
-
-      for(let i=this.bullets.length-1;i>=0;i--){
-        const b=this.bullets[i];
-        if(this.shieldHitAndDamage(b.x,b.y,this.BW,this.BH)) this.bullets.splice(i,1);
-      }
-      for(let i=this.ebullets.length-1;i>=0;i--){
-        const b=this.ebullets[i];
-        if(this.shieldHitAndDamage(b.x,b.y,this.BW,this.BH)) this.ebullets.splice(i,1);
-      }
-
-      // ★敵が自機に体当たりしたら即ゲームオーバー
-      if(!this.over){
-        const pl = this.px - this.shipW/2;
-        const pt = this.playerTopY();
-        const pw = this.shipW;
-        const ph = this.shipH;
-        const {stepX, stepY} = this.formationMetrics();
-        for(let r=0;r<this.rows;r++){
-          for(let c=0;c<this.cols;c++){
-            if(this.hpGrid[r][c] <= 0) continue;
-            const ex = this.fx + c*stepX;
-            const ey = this.fy + r*stepY;
-            if(aabb(ex,ey,this.enemyW,this.enemyH, pl,pt,pw,ph)){
-              this.fy = pt - (r * stepY + this.enemyH);
-              this.triggerRamming(this.fy);
-              return;
-            }
-          }
-        }
-      }
-
-      const {stepX,stepY} = this.formationMetrics();
-      for(let i=this.bullets.length-1;i>=0;i--){
-        const b=this.bullets[i];
-        const c=Math.floor((b.x - this.fx)/stepX);
-        const r=Math.floor((b.y - this.fy)/stepY);
-        if(r>=0 && r<this.rows && c>=0 && c<this.cols && this.hpGrid[r][c] > 0){
-          const ex=this.fx + c*stepX;
-          const ey=this.fy + r*stepY;
-          if(aabb(b.x,b.y,this.BW,this.BH, ex,ey, this.enemyW,this.enemyH)){
-            this.bullets.splice(i,1);
-
-            this.hpGrid[r][c]--;
-            this.boom(ex+this.enemyW/2, ey+this.enemyH/2);
-
-            if(this.hpGrid[r][c] <= 0){
-              this.score += this.rowKillScore(r);
-              scoreEl.textContent = this.score;
-              if(this.countAlive()===0 && !this.over && !this.clearing) this.nextWave();
-            }
-          }
-        }
-      }
-
-      if(!this.over){
-        const pl = this.px - this.shipW/2;
-        const pt = this.playerTopY();
-        for(let i=this.ebullets.length-1;i>=0;i--){
-          const b=this.ebullets[i];
-          if(aabb(b.x,b.y,this.BW,this.BH, pl,pt, this.shipW,this.shipH)){
-            this.ebullets.splice(i,1);
-            if(this.invincible===0 && this.safeTimer===0){
-              this.life--;
-              this.updateLifeHud();
-              this.boom(this.px, pt+this.shipH/2);
-              this.invincible = 60;
-              if(this.life<=0) this.gameOver();
-            }
-          }
-        }
-      }
-    },
-
+  /* =========================
+     Renderer
+  ========================= */
+  class Renderer {
+    constructor(state, projectiles){
+      this.s = state;
+      this.pj = projectiles;
+    }
     render(){
+      const s = this.s;
+
       ctx.fillStyle="#000";
       ctx.fillRect(0,0,innerWidth,innerHeight);
 
       ctx.fillStyle="#fff";
-      for(const s of this.stars) ctx.fillRect(s.x,s.y,2,2);
+      for(const st of s.stars) ctx.fillRect(st.x,st.y,2,2);
 
-      const sc = this.colors.shield();
-      for(const s of this.shields){
+      const sc = s.colors.shield();
+      for(const sh of s.shields){
         ctx.fillStyle = sc;
-        for(let r=0;r<s.h;r++){
-          for(let c=0;c<s.w;c++){
-            if(s.bits[r][c]) ctx.fillRect(s.x + c*this.U, s.y + r*this.U, this.U, this.U);
+        for(let r=0;r<sh.h;r++){
+          for(let c=0;c<sh.w;c++){
+            if(sh.bits[r][c]) ctx.fillRect(sh.x + c*s.U, sh.y + r*s.U, s.U, s.U);
           }
         }
       }
 
-      const {stepX,stepY} = this.formationMetrics();
-      for(let r=0;r<this.rows;r++){
-        for(let c=0;c<this.cols;c++){
-          if(this.hpGrid[r][c] <= 0) continue;
+      const {stepX,stepY} = s.formationMetrics();
+      for(let r=0;r<s.rows;r++){
+        for(let c=0;c<s.cols;c++){
+          if(s.hpGrid[r][c] <= 0) continue;
           const type = ENEMY_TYPES[r % ENEMY_TYPES.length];
-          const bmp = this.enemyFrame ? type.b : type.a;
-          const color = this.colors.row[r % this.colors.row.length];
-          const x = this.fx + c*stepX;
-          const y = this.fy + r*stepY;
-          const scale = Math.max(1, Math.round(this.enemyW/7));
+          const bmp = s.enemyFrame ? type.b : type.a;
+          const color = s.colors.row[r % s.colors.row.length];
+          const x = s.fx + c*stepX;
+          const y = s.fy + r*stepY;
+          const scale = Math.max(1, Math.round(s.enemyW/7));
           drawBitmap(bmp, x, y, scale, color);
 
-          if(this.hpGrid[r][c] >= 2){
+          if(s.hpGrid[r][c] >= 2){
             ctx.fillStyle="rgba(255,255,255,.65)";
-            ctx.fillRect(x, y-3, Math.max(10, this.enemyW*0.30), 2);
+            ctx.fillRect(x, y-3, Math.max(10, s.enemyW*0.30), 2);
           }
         }
       }
 
-      drawBitmap(SHIP, this.px - this.shipW/2, this.playerTopY(), this.U, this.colors.player());
+      drawBitmap(SHIP, s.px - s.shipW/2, s.playerTopY(), s.U, s.colors.player());
 
       ctx.fillStyle="cyan";
-      for(const b of this.bullets) ctx.fillRect(b.x,b.y,this.BW,this.BH);
+      for(const b of this.pj.playerBullets.active) ctx.fillRect(b.x,b.y,s.BW,s.BH);
 
       ctx.fillStyle="orange";
-      for(const b of this.ebullets) ctx.fillRect(b.x,b.y,this.BW,this.BH);
+      for(const b of this.pj.enemyBullets.active) ctx.fillRect(b.x,b.y,s.BW,s.BH);
 
       ctx.fillStyle="orange";
-      for(const p of this.booms) ctx.fillRect(p.x,p.y,4,4);
+      for(const p of this.pj.booms.active) ctx.fillRect(p.x,p.y,4,4);
 
-      if(this.paused){
+      if(s.paused){
         ctx.fillStyle="rgba(0,0,0,.25)";
         ctx.fillRect(0,0,innerWidth,innerHeight);
       }
     }
-  };
+  }
+
+  /* =========================
+     Input（ほぼそのまま）
+  ========================= */
+  const state = new GameState();
+  const enemies = new EnemySystem(state);
+  const shields = new ShieldSystem(state);
+
+  // projectiles は enemies/shields 参照するので後で構築
+  let projectiles, collisions, logic, renderer;
 
   const Input = {
     stick: { baseCx:0, baseCy:0, radius:52, dx:0 },
@@ -994,21 +1264,21 @@
     applyStick(){
       const dead = 0.18;
       if(Math.abs(this.stick.dx) < dead){
-        Game.holdL = false; Game.holdR = false;
+        state.holdL = false; state.holdR = false;
         return;
       }
       if(this.stick.dx < 0){
-        Game.holdL = true; Game.holdR = false;
+        state.holdL = true; state.holdR = false;
       }else{
-        Game.holdR = true; Game.holdL = false;
+        state.holdR = true; state.holdL = false;
       }
     },
 
     stickReset(){
       this.stickTouchActive = false;
       this.stick.dx = 0;
-      Game.holdL = false;
-      Game.holdR = false;
+      state.holdL = false;
+      state.holdR = false;
       this.updateStickGeometry();
       this.setKnobPos(this.stick.baseCx, this.stick.baseCy);
     },
@@ -1025,43 +1295,54 @@
     },
 
     updateControlsVisibility(){
-      controls.style.display = Game.isMobile ? "block" : "none";
+      controls.style.display = state.isMobile ? "block" : "none";
       this.updateStickGeometry();
       this.setKnobPos(this.stick.baseCx, this.stick.baseCy);
     }
   };
 
+  /* =========================
+     Wiring / Events
+  ========================= */
+  function rebuildSystems(){
+    // systems は state を共有しつつ、依存順に組む
+    projectiles = new ProjectileSystem(state, enemies, shields);
+    collisions  = new CollisionSystem(state, enemies, shields, projectiles);
+    logic       = new GameLogic(state, enemies, shields, projectiles, collisions);
+    renderer    = new Renderer(state, projectiles);
+  }
+
   pauseBtn.addEventListener("click", (e)=>{
     e.preventDefault();
-    Game.togglePause();
+    logic.togglePause();
   }, {passive:false});
 
   addEventListener("keydown",(e)=>{
     if(e.key==="p"||e.key==="P"||e.key==="Escape"){
-      Game.togglePause();
+      logic.togglePause();
       return;
     }
-    if(Game.paused) return;
+    if(state.paused) return;
 
-    if(Game.over && e.key==="Enter"){
-      Game.reset();
+    if(state.over && e.key==="Enter"){
+      logic.reset();
       return;
     }
 
-    if(e.code==="ArrowLeft") Game.holdL=true;
-    if(e.code==="ArrowRight") Game.holdR=true;
+    if(e.code==="ArrowLeft") state.holdL=true;
+    if(e.code==="ArrowRight") state.holdR=true;
 
-    if(e.code==="KeyA" && Game.playerCanShoot){
-      Game.playerCanShoot = false;
-      Game.shootOnce();
+    if(e.code==="KeyA" && state.playerCanShoot){
+      state.playerCanShoot = false;
+      projectiles.shootPlayerOnce();
     }
   });
 
   addEventListener("keyup",(e)=>{
-    if(Game.paused) return;
-    if(e.code==="ArrowLeft") Game.holdL=false;
-    if(e.code==="ArrowRight") Game.holdR=false;
-    if(e.code==="KeyA") Game.playerCanShoot = true;
+    if(state.paused) return;
+    if(e.code==="ArrowLeft") state.holdL=false;
+    if(e.code==="ArrowRight") state.holdR=false;
+    if(e.code==="KeyA") state.playerCanShoot = true;
   });
 
   ["touchstart","touchmove","touchend"].forEach(t=>{
@@ -1071,7 +1352,7 @@
   });
 
   const onStickStart = (e) => {
-    if(!Game.isMobile || Game.paused || Game.over) return;
+    if(!state.isMobile || state.paused || state.over) return;
     Input.stickTouchActive = true;
     Input.updateStickGeometry();
     if(e.touches && e.touches[0]) Input.stickMoveTouch(e.touches[0]);
@@ -1083,7 +1364,7 @@
   stickKnob.addEventListener("touchstart", onStickStart, {passive:false});
 
   window.addEventListener("touchmove",(e)=>{
-    if(!Input.stickTouchActive || Game.paused) return;
+    if(!Input.stickTouchActive || state.paused) return;
     if(e.touches && e.touches[0]) Input.stickMoveTouch(e.touches[0]);
     e.preventDefault();
     e.stopPropagation();
@@ -1099,13 +1380,13 @@
   window.addEventListener("touchcancel", endStickTouch, {passive:false});
 
   const shootOnceOnTouch = (e) => {
-    if(!Game.isMobile || Game.paused) return;
-    if(Game.over){ Game.reset(); return; }
+    if(!state.isMobile || state.paused) return;
+    if(state.over){ logic.reset(); return; }
 
     shootBtn.blur();
     if(document.activeElement) document.activeElement.blur();
 
-    Game.shootOnce();
+    projectiles.shootPlayerOnce();
 
     e.preventDefault();
     e.stopPropagation();
@@ -1124,28 +1405,29 @@
 
       resizeCanvas();
 
-      const oldIsMobile = Game.isMobile;
-      Game.U = calcU();
-      Game.isMobile = isCoarse();
-      const bpChanged = (oldIsMobile !== Game.isMobile);
+      const oldIsMobile = state.isMobile;
+      state.U = calcU();
+      state.isMobile = isCoarse();
+      const bpChanged = (oldIsMobile !== state.isMobile);
 
-      Game.recalcSizes();
-      Game.resetStars();
-      Game.clampPlayer();
+      state.recalcSizes();
+      state.resetStars();
+      state.clampPlayer();
       Input.updateControlsVisibility();
 
       if(bpChanged){
-        Game.reset();
+        // ブレイクポイント変化時は完全リセット（操作系/当たり判定のズレ防止）
+        logic.reset();
         return;
       }
 
-      Game.relayoutShields();
+      shields.relayoutShields();
 
-      const {totalW, baseY} = Game.formationMetrics();
-      Game.fx = (innerWidth - totalW)/2;
-      Game.fy = baseY;
+      const {totalW, baseY} = state.formationMetrics();
+      state.fx = (innerWidth - totalW)/2;
+      state.fy = baseY;
 
-      if(Game.paused) Input.stickReset();
+      if(state.paused) Input.stickReset();
     });
   });
 
@@ -1154,20 +1436,23 @@
     const dt = Math.min(34, now - (loop._last || now));
     loop._last = now;
 
-    Game.update(dt);
-    Game.detectCollisions();
-    Game.render();
+    logic.update(dt);
+    collisions.detect();
+    renderer.render();
 
     requestAnimationFrame(loop);
   }
 
+  // boot
   resizeCanvas();
-  Game.recalcSizes();
-  Game.resetStars();
+  rebuildSystems();
+
+  state.recalcSizes();
+  state.resetStars();
   Input.updateControlsVisibility();
   Input.stickReset();
-  Game.updateLifeHud();
-  Game.reset();
+  state.updateLifeHud();
+  logic.reset();
   loop();
 
 })();
