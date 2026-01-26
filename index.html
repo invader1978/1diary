@@ -12,8 +12,21 @@
     overscroll-behavior:none;
     -webkit-overflow-scrolling:auto;
     -webkit-text-size-adjust:100%;
+    /* prevent long-press text selection / callout */
+    -webkit-user-select:none;
+    user-select:none;
+    -webkit-touch-callout:none;
+    -webkit-user-drag:none;
   }
   canvas{position:fixed;inset:0;display:block;touch-action:none;pointer-events:auto}
+
+  /* also disable selection on UI elements */
+  #msg,.controls,button{
+    -webkit-user-select:none;
+    user-select:none;
+    -webkit-touch-callout:none;
+    -webkit-user-drag:none;
+  }
 
   #hud{
     position:fixed;top:8px;left:8px;z-index:10;color:#fff;
@@ -1719,6 +1732,12 @@ resetStars(){
 
     requestAnimationFrame(loop);
   }
+  // prevent long-press selection / context menu on mobile
+  document.addEventListener('contextmenu', (e)=>{ e.preventDefault(); }, {passive:false});
+  document.addEventListener('selectstart', (e)=>{ e.preventDefault(); }, {passive:false});
+  document.addEventListener('dragstart', (e)=>{ e.preventDefault(); }, {passive:false});
+  window.addEventListener('gesturestart', (e)=>{ e.preventDefault(); }, {passive:false});
+
   // boot
   resizeCanvas();
   // initialize sizing + mobile controls before first interaction (prevents "first touch" snap)
