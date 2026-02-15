@@ -228,7 +228,7 @@
 
     function updateEditor(){
       const text = editor.value;
-      // 改行文字の数に基づいて行数を算出
+      // 論理的な改行数で計算
       const lines = text.split('\n').length;
       
       let numbers = "";
@@ -266,11 +266,18 @@
 
     function downloadText(){
       if (!editor.value) return showToast("Empty");
-      const blob = new Blob([editor.value], { type: 'text/plain' });
+      
+      // UTF-8のBOMを付与してモバイルでの文字化けを防止
+      const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+      const blob = new Blob([bom, editor.value], { type: 'text/plain;charset=utf-8' });
+      
       const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
+      const url = URL.createObjectURL(blob);
+      a.href = url;
       a.download = `memo_${Date.now()}.txt`;
       a.click();
+      
+      setTimeout(() => URL.revokeObjectURL(url), 100);
       showToast("✔ Exported");
     }
 
@@ -280,7 +287,7 @@
       updateCurrentLineHighlight(); 
     });
 
-    // スクロール時の行番号同期とハイライト追従
+    // スクロール時の同期を強化
     editor.addEventListener('scroll', () => {
       lineNumbers.scrollTop = editor.scrollTop;
       updateCurrentLineHighlight();
@@ -298,7 +305,7 @@
       updateCurrentLineHighlight();
     });
 
-    // --- Shortcuts & Keyboard ---
+    // --- Keyboard Actions ---
     editor.addEventListener('keydown', (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 's') {
         e.preventDefault();
