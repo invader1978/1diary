@@ -15,6 +15,12 @@
   --accent:#ff375f;
   --danger:#ff3b30;
   --radius:24px;
+
+  /* ✅ 改善②：削除ボタン幅を一元管理（CSS/JSで共有） */
+  --actionW: 98px;
+
+  /* iOSっぽい戻り（少しバネ感） */
+  --spring: cubic-bezier(.2,.95,.2,1.1);
 }
 
 *{box-sizing:border-box;}
@@ -30,6 +36,7 @@ body{
   user-select:none;
   touch-action:manipulation;
 }
+
 button, .row{ -webkit-user-select:none; user-select:none; }
 input{ -webkit-user-select:text; user-select:text; }
 
@@ -75,6 +82,11 @@ input{ -webkit-user-select:text; user-select:text; }
   font-weight:900;
   font-size:18px;
   min-height:52px;
+  transition:transform .12s ease, filter .12s ease;
+}
+.iconbtn:active, .editbtn:active{
+  transform:scale(.97);
+  filter:brightness(1.08);
 }
 
 /* =======================
@@ -86,13 +98,11 @@ input{ -webkit-user-select:text; user-select:text; }
   overflow:hidden;
 }
 
-.swipe-wrap{ position:relative; overflow:hidden; }
+.swipe-wrap{ position:relative; overflow:hidden; width:100%; }
 
 /* ===== Swipe表示：通常は行が削除ボタンを完全に隠す ===== */
-.swipe-wrap{ width:100%; }
 .row{ width:100%; position:relative; z-index:2; }
 .actions{ z-index:1; }
-
 
 .actions{
   position:absolute;
@@ -100,12 +110,24 @@ input{ -webkit-user-select:text; user-select:text; }
   display:flex;
 }
 .actions button{
-  width:98px;
+  width:var(--actionW);
   border:none;
   background:var(--danger);
   color:#fff;
   font-weight:900;
+
+  /* ✅ 改善③：角丸でiOSっぽく */
+  border-top-left-radius:14px;
+  border-bottom-left-radius:14px;
+
+  transition:transform .12s ease, filter .12s ease;
 }
+.actions button:active{
+  transform:scale(.98);
+  filter:brightness(1.06);
+}
+
+/* 編集モードではスワイプ削除を無効化（−で開く） */
 .edit .actions{
   opacity:0;
   pointer-events:none;
@@ -124,8 +146,13 @@ input{ -webkit-user-select:text; user-select:text; }
   padding:18px 16px;
   border-bottom:1px solid var(--line);
   background:var(--card);
-  transition:transform .18s ease;
+
+  /* ✅ 改善③：戻りを少しスプリング寄りに */
+  transition:transform .22s var(--spring), filter .12s ease;
   -webkit-touch-callout:none;
+}
+.row:active{
+  filter:brightness(1.06);
 }
 .row:last-child{border-bottom:none;}
 .dragging{opacity:.35;}
@@ -143,8 +170,13 @@ input{ -webkit-user-select:text; user-select:text; }
   opacity:0;
   transform:translateX(-12px);
   pointer-events:none;
-  transition:opacity .18s ease, transform .18s ease;
+  transition:opacity .18s ease, transform .18s ease, filter .12s ease;
+  display:flex;
+  align-items:center;
+  justify-content:center;
 }
+.del:active{ filter:brightness(1.08); transform:translateX(0) scale(.97); }
+
 .edit .del{
   opacity:1;
   transform:translateX(0);
@@ -192,6 +224,11 @@ input{ -webkit-user-select:text; user-select:text; }
   background:rgba(255,255,255,.10);
   font-size:30px;
   color:#fff;
+  transition:transform .12s ease, filter .12s ease;
+}
+.plus:active{
+  transform:scale(.97);
+  filter:brightness(1.08);
 }
 .inputwrap{ display:none; margin-top:10px; }
 .inputwrap.show{ display:block; }
@@ -205,13 +242,7 @@ input{ -webkit-user-select:text; user-select:text; }
   padding:0 14px;
 }
 
-
 /* マイナス記号はフォントを使わずバーで描画（端末差ゼロで完全中央） */
-.del{
-  display:flex;
-  align-items:center;
-  justify-content:center;
-}
 .del .minus-bar{
   display:block;
   width:14px;
@@ -219,7 +250,6 @@ input{ -webkit-user-select:text; user-select:text; }
   background:#fff;
   border-radius:999px;
 }
-
 </style>
 </head>
 
@@ -251,12 +281,15 @@ input{ -webkit-user-select:text; user-select:text; }
 </div>
 
 <script>
+/* =======================
+   Base / Safety
+======================= */
 document.addEventListener("contextmenu", e=>e.preventDefault(),{passive:false});
 document.addEventListener("gesturestart", e=>e.preventDefault(),{passive:false});
 document.addEventListener("gesturechange", e=>e.preventDefault(),{passive:false});
 document.addEventListener("gestureend", e=>e.preventDefault(),{passive:false});
 
-/* ===== DOM（iOS/Safariでも確実に動かすため明示取得）===== */
+/* ===== DOM ===== */
 const app      = document.getElementById("app");
 const list     = document.getElementById("list");
 const editBtn  = document.getElementById("editBtn");
@@ -266,6 +299,9 @@ const plusBtn  = document.getElementById("plusBtn");
 const inputWrap= document.getElementById("inputWrap");
 const newText  = document.getElementById("newText");
 
+/* ✅ 改善②：幅をCSS変数から取得（JS側も一元化） */
+const ACTION_W = parseInt(getComputedStyle(document.documentElement).getPropertyValue("--actionW"), 10) || 98;
+
 function uid(){
   try{
     if (crypto && crypto.randomUUID) return crypto.randomUUID();
@@ -273,44 +309,101 @@ function uid(){
   return "id_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2);
 }
 
-const KEY="shopping_list_ios_final_v2";
+const KEY="shopping_list_ios_final_v4";
 let items=[];
 let editMode=false;
+
+/* 開いている行（通常/編集） */
 let openId=null;
 let openEditId=null;
+
+/* Drag */
 let dragWrap=null;
 
-load(); render();
+load();
+renderAll();
 
-// 画面のどこかをタップしたら開いている削除を閉じる（通常モードのみ）
-document.addEventListener("pointerdown",(e)=>{
-  if(editMode){
-    if(!openEditId) return;
-    if(e.target.closest(".actions")) return;
-    if(e.target.closest(".swipe-wrap")) return;
-    openEditId=null;
-    render();
-    return;
+/* =======================
+   Utils: Storage
+======================= */
+function save(){ localStorage.setItem(KEY, JSON.stringify(items)); }
+function load(){
+  const raw=localStorage.getItem(KEY);
+  items=raw?JSON.parse(raw):[];
+}
+
+/* =======================
+   DOM Helpers (✅ 改善①：フルrenderを減らす)
+======================= */
+function wrapEl(id){ return list.querySelector(`.swipe-wrap[data-id="${CSS.escape(id)}"]`); }
+function rowEl(id){ const w=wrapEl(id); return w ? w.querySelector(".row") : null; }
+
+function setRowX(id, x){
+  const row = rowEl(id);
+  if(!row) return;
+  row.style.transform = `translateX(${x}px)`;
+}
+
+function closeOpenIfDifferent(id){
+  if(openId && openId !== id){
+    setRowX(openId, 0);
+    openId = null;
   }
-  if(!openId) return;
-  if(e.target.closest(".actions")) return; // 削除ボタンのタップは閉じない
-  if(e.target.closest(".swipe-wrap")) return; // 行内タップは row 側で処理
-  openId=null;
-  render();
-},{capture:true});
+}
 
+function closeAllSwipe(){
+  if(openId){
+    setRowX(openId, 0);
+    openId = null;
+  }
+  if(openEditId){
+    const w = wrapEl(openEditId);
+    if(w) w.classList.remove("show-actions");
+    setRowX(openEditId, 0);
+    openEditId = null;
+  }
+}
+
+/* =======================
+   Top actions
+======================= */
 editBtn.onclick=()=>{
-  openId=null;
-  openEditId=null;
+  closeAllSwipe();
   editMode=!editMode;
   app.classList.toggle("edit",editMode);
-  editBtn.textContent=editMode?"✓":"編集";
-  render();
+  editBtn.textContent = editMode ? "✓" : "編集";
+
+  // ✅ 改善①：全行の表示モードだけ切り替え（再描画しない）
+  list.querySelectorAll(".swipe-wrap").forEach(w=>{
+    const id = w.dataset.id;
+    const row = w.querySelector(".row");
+    const cb = w.querySelector(".cb");
+    const minus = w.querySelector(".del");
+
+    cb.disabled = editMode;
+    cb.style.pointerEvents = editMode ? "none" : "auto";
+    cb.style.opacity = editMode ? ".25" : "1";
+    minus.style.display = editMode ? "inline-flex" : "none";
+
+    w.classList.remove("show-actions");
+    row.style.transition = "transform .22s var(--spring)";
+    row.style.transform = "translateX(0)";
+
+    // ✅ click抑止フラグもリセット
+    row._justSwiped = false;
+  });
+
+  openId = null;
+  openEditId = null;
 };
 
 trashBtn.onclick=()=>{
   if(confirm("全削除しますか？")){
-    items=[]; save(); render();
+    items=[];
+    save();
+    list.innerHTML="";
+    openId=null;
+    openEditId=null;
   }
 };
 
@@ -339,140 +432,191 @@ newText.onkeydown=e=>{
 
 function commitAdd(){
   const t=newText.value.trim();
-  if(!t)return;
-  items.push({id:uid(),text:t,done:false});
+  if(!t) return;
+  const it = {id:uid(), text:t, done:false};
+  items.push(it);
+  save();
   newText.value="";
-  save(); render();
+  inputWrap.classList.add("show");
   newText.focus();
+
+  // ✅ 改善①：追加分だけDOM追加
+  list.appendChild(buildRow(it));
 }
 
+/* =======================
+   Global close behavior
+======================= */
+document.addEventListener("pointerdown",(e)=>{
+  if(e.target.closest(".swipe-wrap")) return;
+  if(e.target.closest(".actions")) return;
+  closeAllSwipe();
+},{capture:true});
+
+/* =======================
+   Render (initial only)
+======================= */
+function renderAll(){
+  list.innerHTML="";
+  items.forEach(it=> list.appendChild(buildRow(it)));
+}
+
+/* =======================
+   Build row DOM
+======================= */
+function buildRow(it){
+  const wrap=document.createElement("div");
+  wrap.className="swipe-wrap";
+  wrap.dataset.id=it.id;
+
+  // actions
+  const actions=document.createElement("div");
+  actions.className="actions";
+  const delBtn=document.createElement("button");
+  delBtn.type="button";
+  delBtn.textContent="削除";
+  delBtn.onclick=()=>removeOne(it.id);
+  actions.appendChild(delBtn);
+  wrap.appendChild(actions);
+
+  // row
+  const row=document.createElement("div");
+  row.className="row";
+  row.style.transform="translateX(0)";
+  row._justSwiped = false; // ✅ 追加：スワイプ直後click抑止フラグ
+
+  // left (minus)
+  const left=document.createElement("div");
+  left.className="leftSlot";
+  const minus=document.createElement("button");
+  minus.className="del";
+  minus.innerHTML='<span class="minus-bar" aria-hidden="true"></span>';
+  minus.type="button";
+  minus.style.display = editMode ? "inline-flex" : "none";
+  minus.onclick=()=>{
+    if(!editMode) return;
+
+    if(openEditId && openEditId !== it.id){
+      const prev = wrapEl(openEditId);
+      if(prev) prev.classList.remove("show-actions");
+      setRowX(openEditId, 0);
+    }
+    const willOpen = openEditId !== it.id;
+    openEditId = willOpen ? it.id : null;
+    wrap.classList.toggle("show-actions", willOpen);
+    setRowX(it.id, willOpen ? -ACTION_W : 0);
+  };
+  left.appendChild(minus);
+  row.appendChild(left);
+
+  // checkbox
+  const cb=document.createElement("input");
+  cb.type="checkbox";
+  cb.className="cb";
+  cb.checked=!!it.done;
+  cb.disabled=editMode;
+  cb.onchange=()=>toggleDone(it.id, cb.checked);
+  row.appendChild(cb);
+
+  // text
+  const text=document.createElement("div");
+  text.className="text" + (it.done ? " checked":"");
+  text.textContent=it.text;
+  row.appendChild(text);
+
+  // handle
+  const right=document.createElement("div");
+  right.className="rightSlot";
+  const handle=document.createElement("div");
+  handle.className="handle";
+  handle.textContent="≡";
+  handle.onpointerdown=e=>{
+    if(!editMode) return;
+    e.preventDefault();
+    e.stopPropagation();
+    startDrag(e, wrap);
+  };
+  right.appendChild(handle);
+  row.appendChild(right);
+
+  // ✅ 修正1) row.onclick：スワイプ直後のclickを無視
+  row.onclick=(e)=>{
+    if(row._justSwiped){
+      row._justSwiped = false;
+      return;
+    }
+
+    if(editMode){
+      if(e.target.closest(".del")) return;
+      if(e.target.closest(".actions")) return;
+      if(openEditId){
+        const w = wrapEl(openEditId);
+        if(w) w.classList.remove("show-actions");
+        setRowX(openEditId, 0);
+        openEditId = null;
+      }
+    }else{
+      if(openId===it.id){
+        setRowX(it.id, 0);
+        openId=null;
+      }
+    }
+  };
+
+  // swipe only in normal mode
+  attachSwipe(row, it.id);
+
+  wrap.appendChild(row);
+  return wrap;
+}
+
+/* =======================
+   State ops (✅ 改善①：DOM直接更新)
+======================= */
 function toggleDone(id,val){
-  if(editMode)return;
+  if(editMode) return;
   const it=items.find(x=>x.id===id);
-  if(it){ it.done=val; save(); render(); }
+  if(!it) return;
+  it.done = !!val;
+  save();
+
+  const w = wrapEl(id);
+  if(!w) return;
+  const text = w.querySelector(".text");
+  text.classList.toggle("checked", it.done);
 }
 
 function removeOne(id){
-  items=items.filter(x=>x.id!==id);
-  save(); render();
+  items = items.filter(x=>x.id!==id);
+  save();
+
+  const w = wrapEl(id);
+  if(w) w.remove();
+
+  if(openId===id) openId=null;
+  if(openEditId===id) openEditId=null;
 }
 
-function save(){localStorage.setItem(KEY,JSON.stringify(items));}
-function load(){
-  const raw=localStorage.getItem(KEY);
-  items=raw?JSON.parse(raw):[];
-}
-
-function render(){
-  list.innerHTML="";
-  items.forEach(it=>{
-    const wrap=document.createElement("div");
-    wrap.className="swipe-wrap";
-    wrap.dataset.id=it.id;
-    if(editMode && openEditId===it.id) wrap.classList.add("show-actions");
-
-    // 右側の削除ボタン（通常：左スワイプ、編集：−タップで表示）
-    const actions=document.createElement("div");
-    actions.className="actions";
-    const b=document.createElement("button");
-    b.type="button";
-    b.textContent="削除";
-    b.onclick=()=>removeOne(it.id);
-    actions.appendChild(b);
-    wrap.appendChild(actions);
-
-    const row=document.createElement("div");
-    row.className="row";
-    row.style.transform = editMode
-      ? (openEditId===it.id ? "translateX(-98px)" : "translateX(0)")
-      : (openId===it.id ? "translateX(-98px)" : "translateX(0)");
-
-    const left=document.createElement("div");
-    left.className="leftSlot";
-    const minus=document.createElement("button");
-    minus.className="del";
-    minus.innerHTML='<span class="minus-bar" aria-hidden="true"></span>';
-    minus.style.display = editMode ? "inline-flex" : "none";
-    minus.type="button";
-    minus.onclick=()=>{
-      if(!editMode) return;
-      // 1行だけ開く
-      openEditId = (openEditId===it.id) ? null : it.id;
-      // 通常モードの開きは閉じる
-      openId = null;
-      render();
-    };
-    left.appendChild(minus);
-    row.appendChild(left);
-
-    const cb=document.createElement("input");
-    cb.type="checkbox";
-    cb.className="cb";
-    cb.checked=it.done;
-    cb.disabled=editMode;
-    cb.onchange=()=>toggleDone(it.id,cb.checked);
-    row.appendChild(cb);
-
-    const text=document.createElement("div");
-    text.className="text"+(it.done?" checked":"");
-    text.textContent=it.text;
-    row.appendChild(text);
-
-    const right=document.createElement("div");
-    right.className="rightSlot";
-    const handle=document.createElement("div");
-    handle.className="handle";
-    handle.textContent="≡";
-    handle.onpointerdown=e=>{
-      if(!editMode) return;
-      e.preventDefault();
-      e.stopPropagation();
-      startDrag(e,wrap);
-    };
-    right.appendChild(handle);
-    row.appendChild(right);
-
-    row.onclick=(e)=>{
-      // 編集モードで開いている削除を閉じる（−や削除ボタン自体は除外）
-      if(editMode){
-        if(e.target.closest(".del")) return;
-        if(e.target.closest(".actions")) return;
-        if(openEditId){ openEditId=null; render(); }
-      }else{
-        // 通常モード：タップで閉じる
-        if(openId===it.id){ openId=null; render(); }
-      }
-    };
-
-    if(!editMode) attachSwipe(row,it.id);
-
-    wrap.appendChild(row);
-    list.appendChild(wrap);
-  });
-}
-
-/* ✅ ここが修正点：チェック/ボタン/入力に触れたらスワイプを開始しない */
+/* =======================
+   Swipe (normal mode)
+   ✅ 修正2) pointerup確定時に click を1回だけ無視する
+======================= */
 function attachSwipe(row,id){
-  let startX=0,startY=0,swiping=false,currentX=0;
+  let startX=0, startY=0, swiping=false, baseX=0;
 
   const isInteractive = (t) => !!t.closest("input,button,.handle,.del");
 
   row.onpointerdown=(e)=>{
     if(editMode) return;
-
-    // ✅ チェックボックス等を触った場合は何もしない（これでチェックが確実に入る）
     if(isInteractive(e.target)) return;
 
-    // 既に別の行が開いてたら閉じる
-    if(openId && openId !== id){
-      openId = null;
-      render();
-    }
+    closeOpenIfDifferent(id);
 
     startX=e.clientX;
     startY=e.clientY;
     swiping=false;
-    currentX=(openId===id)?-98:0;
+
+    baseX = (openId===id) ? -ACTION_W : 0;
     row.style.transition="none";
   };
 
@@ -488,21 +632,27 @@ function attachSwipe(row,id){
       swiping=true;
     }
 
-    let x=currentX+dx;
-    x=Math.min(0,Math.max(-98,x));
-    row.style.transform=`translateX(${x}px)`;
+    let x = baseX + dx;
+    x = Math.min(0, Math.max(-ACTION_W, x));
+    row.style.transform = `translateX(${x}px)`;
   };
 
   row.onpointerup=()=>{
     if(editMode) return;
-    // スワイプしていないタップなら、開いている削除を閉じる
+    if(startX===0) return;
+
+    // タップ（スワイプしてない）なら、開いてたら閉じる
     if(!swiping){
-      if(openId===id){ openId=null; render(); }
+      if(openId===id){
+        row.style.transition="transform .22s var(--spring)";
+        row.style.transform="translateX(0)";
+        openId=null;
+      }
       startX=0;
       return;
     }
 
-    // 現在位置を見て確定
+    // 現在位置を読む
     const tr=getComputedStyle(row).transform;
     let x=0;
     if(tr && tr!=="none"){
@@ -513,19 +663,32 @@ function attachSwipe(row,id){
       }
     }
 
-    row.style.transition="transform .18s ease";
-    openId=(x<=-49)?id:null;
+    row.style.transition="transform .22s var(--spring)";
+    const willOpen = (x <= -ACTION_W/2);
+    row.style.transform = `translateX(${willOpen ? -ACTION_W : 0}px)`;
+    openId = willOpen ? id : null;
+
+    // ✅ 修正2) スワイプ後に発生する click を1回だけ無視する
+    row._justSwiped = true;
+    setTimeout(()=>{ row._justSwiped = false; }, 0);
+
     startX=0;
-    render();
   };
 
   row.onpointercancel=row.onpointerup;
 }
 
-/* Drag */
+/* =======================
+   Drag reorder (edit mode)
+======================= */
 function startDrag(e,wrap){
-  // 並べ替え開始時は削除表示を必ず閉じる
-  if(openEditId){ openEditId=null; render(); }
+  if(openEditId){
+    const w = wrapEl(openEditId);
+    if(w) w.classList.remove("show-actions");
+    setRowX(openEditId, 0);
+    openEditId = null;
+  }
+
   dragWrap=wrap;
   const row=wrap.querySelector(".row");
   row.classList.add("dragging");
@@ -538,7 +701,7 @@ function startDrag(e,wrap){
   const up=()=>{
     row.classList.remove("dragging");
     dragWrap=null;
-    persist();
+    persistOrder();
     window.removeEventListener("pointermove",move);
     window.removeEventListener("pointerup",up);
     window.removeEventListener("pointercancel",up);
@@ -560,10 +723,10 @@ function getAfter(y){
   return closest.el;
 }
 
-function persist(){
+function persistOrder(){
   const ordered=[...list.querySelectorAll(".swipe-wrap")].map(w=>w.dataset.id);
   const map=new Map(items.map(i=>[i.id,i]));
-  items=ordered.map(id=>map.get(id)).filter(Boolean);
+  items = ordered.map(id=>map.get(id)).filter(Boolean);
   save();
 }
 </script>
