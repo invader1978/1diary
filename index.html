@@ -273,6 +273,7 @@ input{ -webkit-user-select:text; user-select:text; }
 
 /* =======================
    Modal (A11y強化)
+   ※ 個別削除では使わず、「全削除」だけで利用
 ======================= */
 .modal{
   position:fixed;
@@ -391,7 +392,7 @@ input{ -webkit-user-select:text; user-select:text; }
 <!-- ✅ A11y: 状態通知（aria-live） -->
 <div class="sr-only" id="live" aria-live="polite" aria-atomic="true"></div>
 
-<!-- ✅ confirmモーダル（フォーカストラップ/復帰） -->
+<!-- ✅ confirmモーダル（全削除のみ） -->
 <div class="modal" id="modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="modalTitle" aria-describedby="modalMsg">
   <div class="modal-card" role="document">
     <div class="modal-body">
@@ -407,7 +408,7 @@ input{ -webkit-user-select:text; user-select:text; }
 
 <script>
 /* =======================
-   ✅ 改善①：無効化は“モバイル（タッチ）限定”
+   Touch-only protections
 ======================= */
 const IS_TOUCH = matchMedia("(pointer: coarse)").matches || "ontouchstart" in window;
 if(IS_TOUCH){
@@ -417,353 +418,342 @@ if(IS_TOUCH){
   document.addEventListener("gestureend", e=>e.preventDefault(),{passive:false});
 }
 
-/* ===== DOM ===== */
-const app      = document.getElementById("app");
-const list     = document.getElementById("list");
-const editBtn  = document.getElementById("editBtn");
-const trashBtn = document.getElementById("trashBtn");
-const shareBtn = document.getElementById("shareBtn");
-const plusBtn  = document.getElementById("plusBtn");
-const inputWrap= document.getElementById("inputWrap");
-const newText  = document.getElementById("newText");
-const topbar   = document.querySelector(".topbar");
-const bottom   = document.querySelector(".bottom");
-const live     = document.getElementById("live");
+/* =======================
+   DOM
+======================= */
+const dom = {
+  app: document.getElementById("app"),
+  list: document.getElementById("list"),
+  editBtn: document.getElementById("editBtn"),
+  trashBtn: document.getElementById("trashBtn"),
+  shareBtn: document.getElementById("shareBtn"),
+  plusBtn: document.getElementById("plusBtn"),
+  inputWrap: document.getElementById("inputWrap"),
+  newText: document.getElementById("newText"),
+  topbar: document.querySelector(".topbar"),
+  bottom: document.querySelector(".bottom"),
+  live: document.getElementById("live"),
 
-/* modal */
-const modal       = document.getElementById("modal");
-const modalTitle  = document.getElementById("modalTitle");
-const modalMsg    = document.getElementById("modalMsg");
-const modalCancel = document.getElementById("modalCancel");
-const modalOk     = document.getElementById("modalOk");
+  modal: document.getElementById("modal"),
+  modalTitle: document.getElementById("modalTitle"),
+  modalMsg: document.getElementById("modalMsg"),
+  modalCancel: document.getElementById("modalCancel"),
+  modalOk: document.getElementById("modalOk"),
+};
 
-/* 幅をCSS変数から取得（JS側も一元化） */
+const state = {
+  items: [],
+  editMode: false,
+  openId: null,
+  openEditId: null,
+
+  dragWrap: null,
+  placeholder: null,
+  dragOffsetY: 0,
+  dragPointerId: null,
+  rafId: null,
+  latestClientY: 0,
+
+  modalResolver: null,
+  modalPrevFocus: null,
+};
+
 const ACTION_W = parseInt(getComputedStyle(document.documentElement).getPropertyValue("--actionW"), 10) || 98;
 
+/* =======================
+   Utils
+======================= */
 function announce(msg){
-  // aria-live は同一文だと読まれないことがあるので少し揺らす
-  live.textContent = "";
-  setTimeout(()=>{ live.textContent = msg; }, 10);
+  dom.live.textContent = "";
+  setTimeout(()=>{ dom.live.textContent = msg; }, 10);
 }
-
 function uid(){
   try{ if (crypto && crypto.randomUUID) return crypto.randomUUID(); }catch{}
   return "id_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2);
 }
+function wrapEl(id){ return dom.list.querySelector(`.swipe-wrap[data-id="${CSS.escape(id)}"]`); }
+function rowEl(id){ const w=wrapEl(id); return w ? w.querySelector(".row") : null; }
+function getItem(id){ return state.items.find(x=>x.id===id) || null; }
 
 /* =======================
-   ✅ 改善③：localStorageキー整理 + 旧キー移行
+   Layout
 ======================= */
-const KEY = "shopping_list_ios_v8";
-const OLD_KEYS = ["shopping_list_ios_final_v8"]; // 旧版から自動移行
-
-let items=[];
-let editMode=false;
-
-/* 開いている行（通常/編集） */
-let openId=null;
-let openEditId=null;
-
-/* Drag */
-let dragWrap=null;
-
-/* ✅ 間延び解消：長い時だけカードにmax-height（自動計算） */
 function layoutCardHeight(){
-  const s = getComputedStyle(app);
+  const s = getComputedStyle(dom.app);
   const padTop = parseFloat(s.paddingTop) || 0;
   const padBottom = parseFloat(s.paddingBottom) || 0;
 
   const reserve = 80;
-  const available = window.innerHeight - topbar.offsetHeight - bottom.offsetHeight - padTop - padBottom - reserve;
+  const available = window.innerHeight - dom.topbar.offsetHeight - dom.bottom.offsetHeight - padTop - padBottom - reserve;
   const maxH = Math.max(180, available - 14);
-  list.style.maxHeight = maxH + "px";
+  dom.list.style.maxHeight = maxH + "px";
 }
 window.addEventListener("resize", layoutCardHeight);
 window.addEventListener("orientationchange", layoutCardHeight);
 
 /* =======================
-   Storage（破損耐性 + 移行）
+   Storage
 ======================= */
-function save(){
-  try{ localStorage.setItem(KEY, JSON.stringify(items)); }catch{}
-}
-function _loadFromKey(k){
-  const raw = localStorage.getItem(k);
-  if(!raw) return null;
-  try{
-    const parsed = JSON.parse(raw);
-    if(!Array.isArray(parsed)) return null;
-    const arr = parsed
-      .map(x=>({
-        id: (x && typeof x.id==="string" && x.id) ? x.id : uid(),
-        text: String(x?.text ?? "").trim(),
-        done: !!x?.done
-      }))
-      .filter(x=>x.text);
-    return arr;
-  }catch{
-    return null;
-  }
-}
-function load(){
-  // 新キー優先
-  let loaded = _loadFromKey(KEY);
+const STORAGE = (() => {
+  const KEY = "shopping_list_ios_v9b";
+  const OLD_KEYS = ["shopping_list_ios_v9", "shopping_list_ios_v8", "shopping_list_ios_final_v8"];
 
-  // 新キーが無ければ旧キーを探索して移行
-  if(!loaded){
-    for(const k of OLD_KEYS){
-      const old = _loadFromKey(k);
-      if(old){
-        loaded = old;
-        // 移行保存
-        items = loaded;
-        save();
-        try{ localStorage.removeItem(k); }catch{}
-        announce("データを新形式に移行しました");
-        return;
-      }
+  function save(){
+    try{ localStorage.setItem(KEY, JSON.stringify(state.items)); }catch{}
+  }
+
+  function _loadFromKey(k){
+    const raw = localStorage.getItem(k);
+    if(!raw) return null;
+    try{
+      const parsed = JSON.parse(raw);
+      if(!Array.isArray(parsed)) return null;
+      return parsed
+        .map(x=>({
+          id: (x && typeof x.id==="string" && x.id) ? x.id : uid(),
+          text: String(x?.text ?? "").trim(),
+          done: !!x?.done
+        }))
+        .filter(x=>x.text);
+    }catch{
+      return null;
     }
   }
 
-  if(loaded){
-    items = loaded;
-  }else{
-    items = [];
-    // 新キーが壊れてた場合は消しておく
-    try{ localStorage.removeItem(KEY); }catch{}
+  function load(){
+    let loaded = _loadFromKey(KEY);
+
+    if(!loaded){
+      for(const k of OLD_KEYS){
+        const old = _loadFromKey(k);
+        if(old){
+          loaded = old;
+          state.items = loaded;
+          save();
+          try{ localStorage.removeItem(k); }catch{}
+          announce("データを新形式に移行しました");
+          return;
+        }
+      }
+    }
+
+    if(loaded){
+      state.items = loaded;
+    }else{
+      state.items = [];
+      try{ localStorage.removeItem(KEY); }catch{}
+    }
   }
-}
+
+  return { load, save };
+})();
 
 /* =======================
-   DOM Helpers
+   Modal（全削除のみ）
 ======================= */
-function wrapEl(id){ return list.querySelector(`.swipe-wrap[data-id="${CSS.escape(id)}"]`); }
-function rowEl(id){ const w=wrapEl(id); return w ? w.querySelector(".row") : null; }
+const MODAL = (() => {
+  function _focusables(){
+    return [...dom.modal.querySelectorAll('button,[href],input,select,textarea,[tabindex]:not([tabindex="-1"])')]
+      .filter(el => !el.disabled && el.offsetParent !== null);
+  }
 
+  function showConfirm({title="確認", message="よろしいですか？", okText="OK", cancelText="キャンセル", danger=false}){
+    state.modalPrevFocus = document.activeElement;
+
+    dom.modalTitle.textContent = title;
+    dom.modalMsg.textContent = message;
+    dom.modalOk.textContent = okText;
+    dom.modalCancel.textContent = cancelText;
+    dom.modalOk.classList.toggle("danger", !!danger);
+
+    dom.modal.classList.add("show");
+    dom.modal.setAttribute("aria-hidden","false");
+    setTimeout(()=>{ dom.modalCancel.focus?.(); }, 0);
+
+    return new Promise(resolve => { state.modalResolver = resolve; });
+  }
+
+  function hideConfirm(val){
+    dom.modal.classList.remove("show");
+    dom.modal.setAttribute("aria-hidden","true");
+
+    const r = state.modalResolver;
+    state.modalResolver = null;
+
+    try{ state.modalPrevFocus?.focus?.(); }catch{}
+    state.modalPrevFocus = null;
+
+    if(r) r(!!val);
+  }
+
+  dom.modalCancel.addEventListener("click", ()=>hideConfirm(false));
+  dom.modalOk.addEventListener("click", ()=>hideConfirm(true));
+  dom.modal.addEventListener("click", (e)=>{ if(e.target === dom.modal) hideConfirm(false); });
+
+  document.addEventListener("keydown",(e)=>{
+    if(!dom.modal.classList.contains("show")) return;
+
+    if(e.key==="Escape"){
+      e.preventDefault();
+      hideConfirm(false);
+      return;
+    }
+
+    if(e.key==="Tab"){
+      const f = _focusables();
+      if(!f.length) return;
+
+      const first = f[0];
+      const last = f[f.length-1];
+      const active = document.activeElement;
+
+      if(e.shiftKey){
+        if(active === first || !dom.modal.contains(active)){
+          e.preventDefault();
+          last.focus();
+        }
+      }else{
+        if(active === last){
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    }
+  });
+
+  return { showConfirm };
+})();
+
+/* =======================
+   Swipe helpers
+======================= */
 function setRowX(id, x){
   const row = rowEl(id);
   if(!row) return;
-  row._x = x; // ✅ 改善②：現在値を保持（matrix解析しない）
+  row._x = x;
   row.style.transform = `translateX(${x}px)`;
 }
 
-function closeOpenIfDifferent(id){
-  if(openId && openId !== id){
-    setRowX(openId, 0);
-    openId = null;
-  }
-}
-
 function closeAllSwipe(){
-  if(openId){
-    setRowX(openId, 0);
-    openId = null;
+  if(state.openId){
+    setRowX(state.openId, 0);
+    state.openId = null;
   }
-  if(openEditId){
-    const w = wrapEl(openEditId);
+  if(state.openEditId){
+    const w = wrapEl(state.openEditId);
     if(w) w.classList.remove("show-actions");
-    setRowX(openEditId, 0);
-    openEditId = null;
+    setRowX(state.openEditId, 0);
+    state.openEditId = null;
+  }
+}
+function closeOpenIfDifferent(id){
+  if(state.openId && state.openId !== id){
+    setRowX(state.openId, 0);
+    state.openId = null;
   }
 }
 
 /* =======================
-   ✅ 改善④：モーダル（フォーカストラップ/復帰）
+   ✅ 個別削除：確認なし（即削除）
 ======================= */
-let _modalResolver = null;
-let _modalPrevFocus = null;
+function removeOne(id){
+  const it = getItem(id);
+  if(!it) return;
 
-function _focusablesInModal(){
-  return [...modal.querySelectorAll('button,[href],input,select,textarea,[tabindex]:not([tabindex="-1"])')]
-    .filter(el => !el.disabled && el.offsetParent !== null);
-}
-
-function showConfirm({title="確認", message="よろしいですか？", okText="OK", cancelText="キャンセル", danger=false}){
-  _modalPrevFocus = document.activeElement;
-
-  modalTitle.textContent = title;
-  modalMsg.textContent = message;
-  modalOk.textContent = okText;
-  modalCancel.textContent = cancelText;
-  modalOk.classList.toggle("danger", !!danger);
-
-  modal.classList.add("show");
-  modal.setAttribute("aria-hidden","false");
-
-  setTimeout(()=>{ modalCancel.focus?.(); }, 0);
-
-  return new Promise(resolve=>{
-    _modalResolver = resolve;
-  });
-}
-
-function hideConfirm(val){
-  modal.classList.remove("show");
-  modal.setAttribute("aria-hidden","true");
-  const r = _modalResolver;
-  _modalResolver = null;
-
-  // フォーカス復帰
-  try{ _modalPrevFocus?.focus?.(); }catch{}
-  _modalPrevFocus = null;
-
-  if(r) r(!!val);
-}
-
-modalCancel.addEventListener("click", ()=>hideConfirm(false));
-modalOk.addEventListener("click", ()=>hideConfirm(true));
-modal.addEventListener("click", (e)=>{ if(e.target === modal) hideConfirm(false); });
-
-document.addEventListener("keydown",(e)=>{
-  if(!modal.classList.contains("show")) return;
-
-  if(e.key==="Escape"){
-    e.preventDefault();
-    hideConfirm(false);
-    return;
+  // 開き状態を閉じる
+  if(state.openId === id){ setRowX(id, 0); state.openId = null; }
+  if(state.openEditId === id){
+    const w = wrapEl(id);
+    if(w) w.classList.remove("show-actions");
+    setRowX(id, 0);
+    state.openEditId = null;
   }
 
-  // フォーカストラップ
-  if(e.key==="Tab"){
-    const f = _focusablesInModal();
-    if(!f.length) return;
+  // state
+  state.items = state.items.filter(x=>x.id!==id);
+  STORAGE.save();
 
-    const first = f[0];
-    const last = f[f.length-1];
-    const active = document.activeElement;
+  // DOM
+  const w = wrapEl(id);
+  if(w) w.remove();
 
-    if(e.shiftKey){
-      if(active === first || !modal.contains(active)){
-        e.preventDefault();
-        last.focus();
-      }
-    }else{
-      if(active === last){
-        e.preventDefault();
-        first.focus();
-      }
-    }
-  }
-});
-
-/* =======================
-   Top actions
-======================= */
-editBtn.addEventListener("click", ()=>{
-  closeAllSwipe();
-  editMode=!editMode;
-  app.classList.toggle("edit",editMode);
-  editBtn.textContent = editMode ? "✓" : "編集";
-  editBtn.setAttribute("aria-label", editMode ? "編集モード解除" : "編集モード切り替え");
-  announce(editMode ? "編集モードにしました" : "編集モードを終了しました");
-
-  list.querySelectorAll(".swipe-wrap").forEach(w=>{
-    const row = w.querySelector(".row");
-    const cb = w.querySelector(".cb");
-    const minus = w.querySelector(".del");
-
-    cb.disabled = editMode;
-    cb.style.pointerEvents = editMode ? "none" : "auto";
-    cb.style.opacity = editMode ? ".25" : "1";
-    minus.style.display = editMode ? "inline-flex" : "none";
-
-    w.classList.remove("show-actions");
-    row.style.transition = "transform .22s var(--spring)";
-    setRowX(w.dataset.id, 0);
-    row._justSwiped = false;
-  });
-
-  openId = null;
-  openEditId = null;
-});
-
-trashBtn.addEventListener("click", async ()=>{
-  const ok = await showConfirm({
-    title:"全削除",
-    message:"リストをすべて削除しますか？\nこの操作は元に戻せません。",
-    okText:"削除",
-    cancelText:"キャンセル",
-    danger:true
-  });
-  if(!ok) return;
-
-  items=[];
-  save();
-  list.innerHTML="";
-  openId=null;
-  openEditId=null;
   layoutCardHeight();
-  announce("リストを全削除しました");
-});
-
-/* 共有：テキストだけ */
-shareBtn.addEventListener("click", async ()=>{
-  const text=items.map(i=>`${i.done?"☑":"☐"} ${i.text}`).join("\n");
-  try{
-    if(navigator.share){
-      await navigator.share({title:"買い物リスト",text});
-      announce("共有しました");
-    }else{
-      await navigator.clipboard.writeText(text);
-      alert("コピーしました");
-      announce("クリップボードにコピーしました");
-    }
-  }catch{}
-});
-
-plusBtn.addEventListener("click", ()=>{
-  if(!inputWrap.classList.contains("show")){
-    inputWrap.classList.add("show");
-    newText.focus();
-    layoutCardHeight();
-  }else commitAdd();
-});
-
-newText.addEventListener("keydown", e=>{
-  if(e.key==="Enter") commitAdd();
-  if(e.key==="Escape"){
-    inputWrap.classList.remove("show");
-    newText.value="";
-    layoutCardHeight();
-    announce("入力をキャンセルしました");
-  }
-});
-
-function commitAdd(){
-  const t=newText.value.trim();
-  if(!t) return;
-  const it = {id:uid(), text:t, done:false};
-  items.push(it);
-  save();
-  newText.value="";
-  inputWrap.classList.add("show");
-  newText.focus();
-
-  list.appendChild(buildRow(it));
-  layoutCardHeight();
-  announce(`追加しました: ${it.text}`);
+  announce(`削除しました: ${it.text}`);
 }
 
 /* =======================
-   Global close behavior
+   State ops
 ======================= */
-document.addEventListener("pointerdown",(e)=>{
-  if(e.target.closest(".swipe-wrap")) return;
-  if(e.target.closest(".actions")) return;
-  if(modal.classList.contains("show")) return;
-  closeAllSwipe();
-},{capture:true});
+function toggleDone(id,val){
+  if(state.editMode) return;
+  const it = getItem(id);
+  if(!it) return;
+
+  it.done = !!val;
+  STORAGE.save();
+
+  const w = wrapEl(id);
+  if(!w) return;
+
+  const text = w.querySelector(".text");
+  text.classList.toggle("checked", it.done);
+
+  const cb = w.querySelector(".cb");
+  if(cb) cb.checked = it.done;
+
+  announce(`${it.text} を ${it.done ? "完了" : "未完了"} にしました`);
+}
+
+/* =======================
+   DOM差分 swap（Alt+↑/↓）
+======================= */
+function swapItemsAndDomById(idA, idB){
+  const iA = state.items.findIndex(x=>x.id===idA);
+  const iB = state.items.findIndex(x=>x.id===idB);
+  if(iA < 0 || iB < 0) return false;
+
+  const tmp = state.items[iA];
+  state.items[iA] = state.items[iB];
+  state.items[iB] = tmp;
+  STORAGE.save();
+
+  const elA = wrapEl(idA);
+  const elB = wrapEl(idB);
+  if(!elA || !elB) return false;
+
+  const parent = dom.list;
+  const nextA = elA.nextSibling;
+  const nextB = elB.nextSibling;
+
+  parent.insertBefore(elA, nextB);
+  parent.insertBefore(elB, nextA);
+
+  return true;
+}
+
+function moveItemById(id, dir){
+  const idx = state.items.findIndex(x=>x.id===id);
+  if(idx < 0) return false;
+  const next = idx + dir;
+  if(next < 0 || next >= state.items.length) return false;
+
+  const idA = state.items[idx].id;
+  const idB = state.items[next].id;
+  const ok = swapItemsAndDomById(idA, idB);
+  if(ok) layoutCardHeight();
+  return ok;
+}
 
 /* =======================
    Render
 ======================= */
 function renderAll(){
-  list.innerHTML="";
-  items.forEach(it=> list.appendChild(buildRow(it)));
+  dom.list.innerHTML="";
+  state.items.forEach(it => dom.list.appendChild(buildRow(it)));
 }
 
 /* =======================
-   Build row DOM
+   Build row
 ======================= */
 function buildRow(it){
   const wrap=document.createElement("div");
@@ -771,7 +761,7 @@ function buildRow(it){
   wrap.dataset.id=it.id;
   wrap.setAttribute("role","listitem");
 
-  // actions
+  // actions（通常モードのスワイプ削除）
   const actions=document.createElement("div");
   actions.className="actions";
   const delBtn=document.createElement("button");
@@ -785,7 +775,7 @@ function buildRow(it){
   // row
   const row=document.createElement("div");
   row.className="row";
-  row._x = 0; // ✅ 改善②：現在Xを保持
+  row._x = 0;
   row.style.transform="translateX(0)";
   row._justSwiped = false;
 
@@ -796,19 +786,20 @@ function buildRow(it){
   minus.className="del";
   minus.innerHTML='<span class="minus-bar" aria-hidden="true"></span>';
   minus.type="button";
-  minus.style.display = editMode ? "inline-flex" : "none";
+  minus.style.display = state.editMode ? "inline-flex" : "none";
   minus.setAttribute("aria-label", `削除メニュー: ${it.text}`);
 
+  // 編集モード：−で「削除ボタン表示」トグル（その後の削除は即削除）
   minus.addEventListener("click", ()=>{
-    if(!editMode) return;
+    if(!state.editMode) return;
 
-    if(openEditId && openEditId !== it.id){
-      const prev = wrapEl(openEditId);
+    if(state.openEditId && state.openEditId !== it.id){
+      const prev = wrapEl(state.openEditId);
       if(prev) prev.classList.remove("show-actions");
-      setRowX(openEditId, 0);
+      setRowX(state.openEditId, 0);
     }
-    const willOpen = openEditId !== it.id;
-    openEditId = willOpen ? it.id : null;
+    const willOpen = state.openEditId !== it.id;
+    state.openEditId = willOpen ? it.id : null;
     wrap.classList.toggle("show-actions", willOpen);
     setRowX(it.id, willOpen ? -ACTION_W : 0);
   });
@@ -821,12 +812,12 @@ function buildRow(it){
   cb.type="checkbox";
   cb.className="cb";
   cb.checked=!!it.done;
-  cb.disabled=editMode;
+  cb.disabled=state.editMode;
   cb.setAttribute("aria-label", `完了切り替え: ${it.text}`);
   cb.addEventListener("change", ()=>toggleDone(it.id, cb.checked));
   row.appendChild(cb);
 
-  // text（クリック/Enter/Spaceで完了切替）
+  // text
   const text=document.createElement("div");
   text.className="text" + (it.done ? " checked":"");
   text.textContent=it.text;
@@ -834,12 +825,12 @@ function buildRow(it){
   text.setAttribute("tabindex","0");
   text.setAttribute("aria-label", `項目: ${it.text}（クリックで完了切替）`);
   text.addEventListener("click", ()=>{
-    if(editMode) return;
+    if(state.editMode) return;
     cb.checked = !cb.checked;
     toggleDone(it.id, cb.checked);
   });
   text.addEventListener("keydown", (e)=>{
-    if(editMode) return;
+    if(state.editMode) return;
     if(e.key==="Enter" || e.key===" "){
       e.preventDefault();
       cb.checked = !cb.checked;
@@ -848,7 +839,7 @@ function buildRow(it){
   });
   row.appendChild(text);
 
-  // handle（✅ 改善④：キーボード並べ替え）
+  // handle
   const right=document.createElement("div");
   right.className="rightSlot";
   const handle=document.createElement("div");
@@ -859,23 +850,20 @@ function buildRow(it){
   handle.setAttribute("aria-label","並べ替えハンドル（Alt+↑/↓でも移動できます）");
 
   handle.addEventListener("pointerdown", e=>{
-    if(!editMode) return;
+    if(!state.editMode) return;
     e.preventDefault();
     e.stopPropagation();
     startDrag(e, wrap);
   });
 
   handle.addEventListener("keydown", (e)=>{
-    if(!editMode) return;
-
-    // Alt + ↑/↓ で行移動（アクセシビリティ用）
+    if(!state.editMode) return;
     if(e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")){
       e.preventDefault();
       const dir = (e.key === "ArrowUp") ? -1 : 1;
       const moved = moveItemById(it.id, dir);
       if(moved){
         announce(`移動しました: ${it.text}`);
-        // 移動後もハンドルにフォーカス保持
         setTimeout(()=>{
           const w = wrapEl(it.id);
           w?.querySelector(".handle")?.focus?.();
@@ -894,24 +882,23 @@ function buildRow(it){
       return;
     }
 
-    if(editMode){
+    if(state.editMode){
       if(e.target.closest(".del")) return;
       if(e.target.closest(".actions")) return;
-      if(openEditId){
-        const w = wrapEl(openEditId);
+      if(state.openEditId){
+        const w = wrapEl(state.openEditId);
         if(w) w.classList.remove("show-actions");
-        setRowX(openEditId, 0);
-        openEditId = null;
+        setRowX(state.openEditId, 0);
+        state.openEditId = null;
       }
     }else{
-      if(openId===it.id){
+      if(state.openId===it.id){
         setRowX(it.id, 0);
-        openId=null;
+        state.openId=null;
       }
     }
   });
 
-  // swipe only in normal mode
   attachSwipe(row, it.id);
 
   wrap.appendChild(row);
@@ -919,66 +906,7 @@ function buildRow(it){
 }
 
 /* =======================
-   State ops
-======================= */
-function toggleDone(id,val){
-  if(editMode) return;
-  const it=items.find(x=>x.id===id);
-  if(!it) return;
-  it.done = !!val;
-  save();
-
-  const w = wrapEl(id);
-  if(!w) return;
-  const text = w.querySelector(".text");
-  text.classList.toggle("checked", it.done);
-
-  const cb = w.querySelector(".cb");
-  if(cb) cb.checked = it.done;
-
-  announce(`${it.text} を ${it.done ? "完了" : "未完了"} にしました`);
-}
-
-function removeOne(id){
-  const it = items.find(x=>x.id===id);
-  items = items.filter(x=>x.id!==id);
-  save();
-
-  const w = wrapEl(id);
-  if(w) w.remove();
-
-  if(openId===id) openId=null;
-  if(openEditId===id) openEditId=null;
-
-  layoutCardHeight();
-  if(it) announce(`削除しました: ${it.text}`);
-}
-
-/* ✅ 改善④：キーボード並べ替え用（Alt+↑/↓） */
-function moveItemById(id, dir){
-  const idx = items.findIndex(x=>x.id===id);
-  if(idx < 0) return false;
-  const next = idx + dir;
-  if(next < 0 || next >= items.length) return false;
-
-  // items入れ替え
-  const tmp = items[idx];
-  items[idx] = items[next];
-  items[next] = tmp;
-  save();
-
-  // DOM入れ替え（簡易に再描画でもOKだが、軽く入れ替え）
-  const a = wrapEl(items[idx].id);
-  const b = wrapEl(items[next].id);
-  // この時点でitemsは入れ替え後なので、DOM側は「現在の順」に合わせて並べ直すのが確実
-  // 小規模なので再描画で確実性優先
-  renderAll();
-  layoutCardHeight();
-  return true;
-}
-
-/* =======================
-   ✅ スワイプ削除（✅ 改善②：matrix解析を廃止）
+   Swipe (normal mode)
 ======================= */
 function attachSwipe(row,id){
   let startX=0, startY=0;
@@ -990,7 +918,7 @@ function attachSwipe(row,id){
   const isInteractive = (t) => !!t.closest("input,button,.handle,.del");
 
   row.addEventListener("pointerdown",(e)=>{
-    if(editMode) return;
+    if(state.editMode) return;
     if(isInteractive(e.target)) return;
 
     closeOpenIfDifferent(id);
@@ -1001,17 +929,15 @@ function attachSwipe(row,id){
     startY = e.clientY;
     swiping = false;
 
-    baseX = (openId===id) ? -ACTION_W : 0;
+    baseX = (state.openId===id) ? -ACTION_W : 0;
     row.style.transition="none";
-
-    // 現在値を同期
     row._x = baseX;
 
     try{ row.setPointerCapture(pid); }catch{}
   }, {passive:true});
 
   row.addEventListener("pointermove",(e)=>{
-    if(editMode || !active) return;
+    if(state.editMode || !active) return;
 
     const dx = e.clientX - startX;
     const dy = e.clientY - startY;
@@ -1026,28 +952,28 @@ function attachSwipe(row,id){
 
     let x = baseX + dx;
     x = Math.min(0, Math.max(-ACTION_W, x));
-    row._x = x; // ✅ 改善②
+    row._x = x;
     row.style.transform = `translateX(${x}px)`;
   }, {passive:false});
 
   const end = ()=>{
-    if(editMode || !active) return;
+    if(state.editMode || !active) return;
 
     if(!swiping){
-      if(openId===id){
+      if(state.openId===id){
         row.style.transition="transform .22s var(--spring)";
         setRowX(id, 0);
-        openId=null;
+        state.openId=null;
       }
       active=false;
       return;
     }
 
     row.style.transition="transform .22s var(--spring)";
-    const x = row._x || 0;  // ✅ 改善②：保持値を使う
+    const x = row._x || 0;
     const willOpen = (x <= -ACTION_W/2);
     setRowX(id, willOpen ? -ACTION_W : 0);
-    openId = willOpen ? id : null;
+    state.openId = willOpen ? id : null;
 
     row._justSwiped = true;
     setTimeout(()=>{ row._justSwiped = false; }, 0);
@@ -1060,108 +986,94 @@ function attachSwipe(row,id){
 }
 
 /* =======================
-   ✅ 改善③：Drag reorder（プレースホルダ方式）
-   ✅ 改善ポイント1：pointermoveをrAFで間引き
+   Drag reorder（placeholder + rAF）
 ======================= */
-let placeholder = null;
-let dragOffsetY = 0;
-let dragPointerId = null;
-
-let rafId = null;
-let latestClientY = 0;
-
 function startDrag(e,wrap){
-  if(openEditId){
-    const w = wrapEl(openEditId);
+  if(state.openEditId){
+    const w = wrapEl(state.openEditId);
     if(w) w.classList.remove("show-actions");
-    setRowX(openEditId, 0);
-    openEditId = null;
+    setRowX(state.openEditId, 0);
+    state.openEditId = null;
   }
 
-  dragWrap = wrap;
+  state.dragWrap = wrap;
   const row = wrap.querySelector(".row");
   row.classList.add("dragging");
 
-  // プレースホルダ生成（同じ高さ）
   const h = wrap.getBoundingClientRect().height;
-  placeholder = document.createElement("div");
-  placeholder.className = "placeholder";
-  placeholder.style.height = h + "px";
+  state.placeholder = document.createElement("div");
+  state.placeholder.className = "placeholder";
+  state.placeholder.style.height = h + "px";
 
-  // 浮かせるための初期情報
   const dragRect = wrap.getBoundingClientRect();
-  dragOffsetY = e.clientY - dragRect.top;
-  dragPointerId = e.pointerId;
+  state.dragOffsetY = e.clientY - dragRect.top;
+  state.dragPointerId = e.pointerId;
 
-  // DOM上でプレースホルダに置き換え（後ろに一旦置く）
-  list.insertBefore(placeholder, wrap.nextSibling);
+  dom.list.insertBefore(state.placeholder, wrap.nextSibling);
 
-  // wrapをfixedで浮かせる
-  const listRect = list.getBoundingClientRect();
+  const listRect = dom.list.getBoundingClientRect();
   wrap.style.width = listRect.width + "px";
   wrap.classList.add("floating");
   wrap.style.transform = `translate3d(${listRect.left}px, ${dragRect.top}px, 0)`;
 
-  try{ wrap.setPointerCapture(dragPointerId); }catch{}
+  try{ wrap.setPointerCapture(state.dragPointerId); }catch{}
 
-  latestClientY = e.clientY;
+  state.latestClientY = e.clientY;
 
   const applyMove = ()=>{
-    rafId = null;
-    if(!dragWrap) return;
+    state.rafId = null;
+    if(!state.dragWrap) return;
 
-    const listRect2 = list.getBoundingClientRect();
-    const y = latestClientY - dragOffsetY;
+    const listRect2 = dom.list.getBoundingClientRect();
+    const y = state.latestClientY - state.dragOffsetY;
 
-    dragWrap.style.transform = `translate3d(${listRect2.left}px, ${y}px, 0)`;
+    state.dragWrap.style.transform = `translate3d(${listRect2.left}px, ${y}px, 0)`;
 
-    // placeholder の挿入位置更新
-    const after = getAfterForPlaceholder(latestClientY);
+    const after = getAfterForPlaceholder(state.latestClientY);
     if(after === null){
-      list.appendChild(placeholder);
+      dom.list.appendChild(state.placeholder);
     }else{
-      list.insertBefore(placeholder, after);
+      dom.list.insertBefore(state.placeholder, after);
     }
 
-    autoScrollWithinList(latestClientY);
+    autoScrollWithinList(state.latestClientY);
   };
 
   const move = (ev)=>{
-    if(!dragWrap) return;
+    if(!state.dragWrap) return;
     ev.preventDefault();
 
-    latestClientY = ev.clientY;
+    state.latestClientY = ev.clientY;
 
-    // ✅ 改善ポイント1：rAFで間引き
-    if(rafId) return;
-    rafId = requestAnimationFrame(applyMove);
+    if(state.rafId) return;
+    state.rafId = requestAnimationFrame(applyMove);
   };
 
   const up = ()=>{
-    if(!dragWrap) return;
+    if(!state.dragWrap) return;
 
-    if(rafId){
-      cancelAnimationFrame(rafId);
-      rafId = null;
+    if(state.rafId){
+      cancelAnimationFrame(state.rafId);
+      state.rafId = null;
     }
 
-    list.insertBefore(dragWrap, placeholder);
-    placeholder.remove();
-    placeholder = null;
+    dom.list.insertBefore(state.dragWrap, state.placeholder);
+    state.placeholder.remove();
+    state.placeholder = null;
 
-    dragWrap.classList.remove("floating");
-    dragWrap.style.transform = "";
-    dragWrap.style.width = "";
+    state.dragWrap.classList.remove("floating");
+    state.dragWrap.style.transform = "";
+    state.dragWrap.style.width = "";
 
     row.classList.remove("dragging");
-    const movedId = dragWrap.dataset.id;
+    const movedId = state.dragWrap.dataset.id;
 
-    dragWrap = null;
-    dragPointerId = null;
+    state.dragWrap = null;
+    state.dragPointerId = null;
 
     persistOrder();
 
-    const movedItem = items.find(x=>x.id===movedId);
+    const movedItem = getItem(movedId);
     if(movedItem) announce(`並べ替えました: ${movedItem.text}`);
 
     window.removeEventListener("pointermove", move, true);
@@ -1175,8 +1087,8 @@ function startDrag(e,wrap){
 }
 
 function getAfterForPlaceholder(y){
-  const els = [...list.querySelectorAll(".swipe-wrap")]
-    .filter(w => w !== dragWrap);
+  const els = [...dom.list.querySelectorAll(".swipe-wrap")]
+    .filter(w => w !== state.dragWrap);
 
   let closest = {offset: -Infinity, el: null};
   for(const w of els){
@@ -1190,26 +1102,137 @@ function getAfterForPlaceholder(y){
 }
 
 function autoScrollWithinList(pointerY){
-  const rect = list.getBoundingClientRect();
+  const rect = dom.list.getBoundingClientRect();
   const edge = 36;
   const speed = 10;
 
   if(pointerY < rect.top + edge){
-    list.scrollTop -= speed;
+    dom.list.scrollTop -= speed;
   }else if(pointerY > rect.bottom - edge){
-    list.scrollTop += speed;
+    dom.list.scrollTop += speed;
   }
 }
 
 function persistOrder(){
-  const ordered=[...list.querySelectorAll(".swipe-wrap")].map(w=>w.dataset.id);
-  const map=new Map(items.map(i=>[i.id,i]));
-  items = ordered.map(id=>map.get(id)).filter(Boolean);
-  save();
+  const ordered=[...dom.list.querySelectorAll(".swipe-wrap")].map(w=>w.dataset.id);
+  const map=new Map(state.items.map(i=>[i.id,i]));
+  state.items = ordered.map(id=>map.get(id)).filter(Boolean);
+  STORAGE.save();
 }
 
-/* init */
-load();
+/* =======================
+   Top actions
+======================= */
+dom.editBtn.addEventListener("click", ()=>{
+  closeAllSwipe();
+  state.editMode=!state.editMode;
+  dom.app.classList.toggle("edit",state.editMode);
+  dom.editBtn.textContent = state.editMode ? "✓" : "編集";
+  dom.editBtn.setAttribute("aria-label", state.editMode ? "編集モード解除" : "編集モード切り替え");
+  announce(state.editMode ? "編集モードにしました" : "編集モードを終了しました");
+
+  dom.list.querySelectorAll(".swipe-wrap").forEach(w=>{
+    const row = w.querySelector(".row");
+    const cb = w.querySelector(".cb");
+    const minus = w.querySelector(".del");
+
+    cb.disabled = state.editMode;
+    cb.style.pointerEvents = state.editMode ? "none" : "auto";
+    cb.style.opacity = state.editMode ? ".25" : "1";
+    minus.style.display = state.editMode ? "inline-flex" : "none";
+
+    w.classList.remove("show-actions");
+    row.style.transition = "transform .22s var(--spring)";
+    setRowX(w.dataset.id, 0);
+    row._justSwiped = false;
+  });
+
+  state.openId = null;
+  state.openEditId = null;
+});
+
+dom.trashBtn.addEventListener("click", async ()=>{
+  const ok = await MODAL.showConfirm({
+    title:"全削除",
+    message:"リストをすべて削除しますか？\nこの操作は元に戻せません。",
+    okText:"削除",
+    cancelText:"キャンセル",
+    danger:true
+  });
+  if(!ok) return;
+
+  state.items=[];
+  STORAGE.save();
+  dom.list.innerHTML="";
+  state.openId=null;
+  state.openEditId=null;
+  layoutCardHeight();
+  announce("リストを全削除しました");
+});
+
+dom.shareBtn.addEventListener("click", async ()=>{
+  const text=state.items.map(i=>`${i.done?"☑":"☐"} ${i.text}`).join("\n");
+  try{
+    if(navigator.share){
+      await navigator.share({title:"買い物リスト",text});
+      announce("共有しました");
+    }else{
+      await navigator.clipboard.writeText(text);
+      alert("コピーしました");
+      announce("クリップボードにコピーしました");
+    }
+  }catch{}
+});
+
+dom.plusBtn.addEventListener("click", ()=>{
+  if(!dom.inputWrap.classList.contains("show")){
+    dom.inputWrap.classList.add("show");
+    dom.newText.focus();
+    layoutCardHeight();
+  }else commitAdd();
+});
+
+dom.newText.addEventListener("keydown", e=>{
+  if(e.key==="Enter") commitAdd();
+  if(e.key==="Escape"){
+    dom.inputWrap.classList.remove("show");
+    dom.newText.value="";
+    layoutCardHeight();
+    announce("入力をキャンセルしました");
+  }
+});
+
+function commitAdd(){
+  const t=dom.newText.value.trim();
+  if(!t) return;
+
+  const it = {id:uid(), text:t, done:false};
+  state.items.push(it);
+  STORAGE.save();
+
+  dom.newText.value="";
+  dom.inputWrap.classList.add("show");
+  dom.newText.focus();
+
+  dom.list.appendChild(buildRow(it));
+  layoutCardHeight();
+  announce(`追加しました: ${it.text}`);
+}
+
+/* =======================
+   Global close behavior
+======================= */
+document.addEventListener("pointerdown",(e)=>{
+  if(e.target.closest(".swipe-wrap")) return;
+  if(e.target.closest(".actions")) return;
+  if(dom.modal.classList.contains("show")) return;
+  closeAllSwipe();
+},{capture:true});
+
+/* =======================
+   Init
+======================= */
+STORAGE.load();
 renderAll();
 layoutCardHeight();
 </script>
