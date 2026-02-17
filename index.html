@@ -266,6 +266,92 @@ input{ -webkit-user-select:text; user-select:text; }
   background:#fff;
   border-radius:999px;
 }
+
+/* =======================
+   ✅ 改善③：並べ替えプレースホルダ
+======================= */
+.placeholder{
+  background:rgba(255,255,255,.06);
+  border-top:1px dashed rgba(255,255,255,.18);
+  border-bottom:1px dashed rgba(255,255,255,.18);
+}
+
+/* =======================
+   ✅ 改善②：iOS風モーダル（confirm置き換え）
+======================= */
+.modal{
+  position:fixed;
+  inset:0;
+  display:none;
+  align-items:center;
+  justify-content:center;
+  background:rgba(0,0,0,.45);
+  z-index:9999;
+  padding:18px;
+}
+.modal.show{ display:flex; }
+
+.modal-card{
+  width:min(340px, 100%);
+  background:rgba(28,28,30,.92);
+  border:1px solid rgba(255,255,255,.10);
+  border-radius:18px;
+  overflow:hidden;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow: 0 20px 60px rgba(0,0,0,.55);
+}
+
+.modal-body{
+  padding:18px 16px 14px;
+  text-align:center;
+}
+.modal-title{
+  font-weight:900;
+  font-size:16px;
+  margin:0 0 8px;
+}
+.modal-msg{
+  color:rgba(255,255,255,.72);
+  font-size:13px;
+  margin:0;
+  line-height:1.45;
+}
+
+.modal-actions{
+  display:flex;
+  border-top:1px solid rgba(255,255,255,.10);
+}
+.modal-actions button{
+  flex:1;
+  height:48px;
+  border:none;
+  background:transparent;
+  color:#fff;
+  font-weight:900;
+  font-size:15px;
+  transition:filter .12s ease, transform .12s ease;
+}
+.modal-actions button:active{ filter:brightness(1.10); transform:scale(.99); }
+.modal-actions button + button{
+  border-left:1px solid rgba(255,255,255,.10);
+}
+.modal-actions .danger{ color: var(--danger); }
+
+/* ドラッグ中の“浮いてる行” */
+.floating{
+  position:fixed !important;
+  left:0;
+  top:0;
+  z-index:9998;
+  pointer-events:none;
+  transform: translate3d(0,0,0);
+  will-change: transform;
+  filter: brightness(1.05);
+  box-shadow: 0 18px 50px rgba(0,0,0,.55);
+  border-radius: 16px;
+  overflow:hidden;
+}
 </style>
 </head>
 
@@ -299,14 +385,33 @@ input{ -webkit-user-select:text; user-select:text; }
 
 </div>
 
+<!-- ✅ 改善②：カスタムモーダル -->
+<div class="modal" id="modal" aria-hidden="true" role="dialog" aria-modal="true">
+  <div class="modal-card" role="document">
+    <div class="modal-body">
+      <h3 class="modal-title" id="modalTitle">確認</h3>
+      <p class="modal-msg" id="modalMsg">よろしいですか？</p>
+    </div>
+    <div class="modal-actions">
+      <button type="button" id="modalCancel">キャンセル</button>
+      <button type="button" class="danger" id="modalOk">削除</button>
+    </div>
+  </div>
+</div>
+
 <script>
 /* =======================
-   Base / Safety
+   ✅ 改善①：無効化は“モバイル（タッチ）限定”
+   - PCでは右クリック等を殺さない
 ======================= */
-document.addEventListener("contextmenu", e=>e.preventDefault(),{passive:false});
-document.addEventListener("gesturestart", e=>e.preventDefault(),{passive:false});
-document.addEventListener("gesturechange", e=>e.preventDefault(),{passive:false});
-document.addEventListener("gestureend", e=>e.preventDefault(),{passive:false});
+const IS_TOUCH = matchMedia("(pointer: coarse)").matches || "ontouchstart" in window;
+
+if(IS_TOUCH){
+  document.addEventListener("contextmenu", e=>e.preventDefault(),{passive:false});
+  document.addEventListener("gesturestart", e=>e.preventDefault(),{passive:false});
+  document.addEventListener("gesturechange", e=>e.preventDefault(),{passive:false});
+  document.addEventListener("gestureend", e=>e.preventDefault(),{passive:false});
+}
 
 /* ===== DOM ===== */
 const app      = document.getElementById("app");
@@ -319,6 +424,13 @@ const inputWrap= document.getElementById("inputWrap");
 const newText  = document.getElementById("newText");
 const topbar   = document.querySelector(".topbar");
 const bottom   = document.querySelector(".bottom");
+
+/* modal */
+const modal       = document.getElementById("modal");
+const modalTitle  = document.getElementById("modalTitle");
+const modalMsg    = document.getElementById("modalMsg");
+const modalCancel = document.getElementById("modalCancel");
+const modalOk     = document.getElementById("modalOk");
 
 /* 幅をCSS変数から取得（JS側も一元化） */
 const ACTION_W = parseInt(getComputedStyle(document.documentElement).getPropertyValue("--actionW"), 10) || 98;
@@ -416,6 +528,48 @@ function closeAllSwipe(){
 }
 
 /* =======================
+   ✅ 改善②：iOS風 confirm モーダル
+======================= */
+let _modalResolver = null;
+
+function showConfirm({title="確認", message="よろしいですか？", okText="OK", cancelText="キャンセル", danger=false}){
+  modalTitle.textContent = title;
+  modalMsg.textContent = message;
+  modalOk.textContent = okText;
+  modalCancel.textContent = cancelText;
+
+  modalOk.classList.toggle("danger", !!danger);
+
+  modal.classList.add("show");
+  modal.setAttribute("aria-hidden","false");
+
+  // フォーカス（キーボード操作の最低限）
+  setTimeout(()=>{ modalCancel.focus?.(); }, 0);
+
+  return new Promise(resolve=>{
+    _modalResolver = resolve;
+  });
+}
+
+function hideConfirm(val){
+  modal.classList.remove("show");
+  modal.setAttribute("aria-hidden","true");
+  const r = _modalResolver;
+  _modalResolver = null;
+  if(r) r(!!val);
+}
+
+modalCancel.addEventListener("click", ()=>hideConfirm(false));
+modalOk.addEventListener("click", ()=>hideConfirm(true));
+modal.addEventListener("click", (e)=>{
+  if(e.target === modal) hideConfirm(false);
+});
+document.addEventListener("keydown",(e)=>{
+  if(!modal.classList.contains("show")) return;
+  if(e.key==="Escape") hideConfirm(false);
+});
+
+/* =======================
    Top actions
 ======================= */
 editBtn.addEventListener("click", ()=>{
@@ -445,15 +599,22 @@ editBtn.addEventListener("click", ()=>{
   openEditId = null;
 });
 
-trashBtn.addEventListener("click", ()=>{
-  if(confirm("全削除しますか？")){
-    items=[];
-    save();
-    list.innerHTML="";
-    openId=null;
-    openEditId=null;
-    layoutCardHeight();
-  }
+trashBtn.addEventListener("click", async ()=>{
+  const ok = await showConfirm({
+    title:"全削除",
+    message:"リストをすべて削除しますか？\nこの操作は元に戻せません。",
+    okText:"削除",
+    cancelText:"キャンセル",
+    danger:true
+  });
+  if(!ok) return;
+
+  items=[];
+  save();
+  list.innerHTML="";
+  openId=null;
+  openEditId=null;
+  layoutCardHeight();
 });
 
 /* ✅ 共有：テキストだけ */
@@ -464,6 +625,7 @@ shareBtn.addEventListener("click", async ()=>{
       await navigator.share({title:"買い物リスト",text});
     }else{
       await navigator.clipboard.writeText(text);
+      // confirm/alertより軽い方がよいが、ここは既存通り最低限
       alert("コピーしました");
     }
   }catch{}
@@ -506,6 +668,7 @@ function commitAdd(){
 document.addEventListener("pointerdown",(e)=>{
   if(e.target.closest(".swipe-wrap")) return;
   if(e.target.closest(".actions")) return;
+  if(modal.classList.contains("show")) return;
   closeAllSwipe();
 },{capture:true});
 
@@ -682,11 +845,7 @@ function removeOne(id){
 }
 
 /* =======================
-   ✅ スワイプ削除：さらに“効きやすく”した版
-   ポイント：
-   - .text上からもスワイプ開始OK（ここが効きづらさの主因になりがち）
-   - 横判定を少し甘く（斜めでも拾う）
-   - 横確定後は capture + preventDefault で主導権を取る
+   ✅ スワイプ削除（現状の“効きやすい”版そのまま）
 ======================= */
 function attachSwipe(row,id){
   let startX=0, startY=0;
@@ -695,8 +854,6 @@ function attachSwipe(row,id){
   let baseX=0;
   let pid=null;
 
-  // ✅ “スワイプ開始を阻害する要素”を最小限に
-  // .text は除外しない（＝テキスト上からでもスワイプできる）
   const isInteractive = (t) => !!t.closest("input,button,.handle,.del");
 
   row.addEventListener("pointerdown",(e)=>{
@@ -724,17 +881,11 @@ function attachSwipe(row,id){
     const dy = e.clientY - startY;
 
     if(!swiping){
-      // ✅ 入りを早く
       if(Math.abs(dx) < 7) return;
-
-      // ✅ 斜めでも拾う：dyが少し大きくても横とみなす
-      // 例）|dx| > |dy| * 0.85 なら横扱い
       if(Math.abs(dx) <= Math.abs(dy) * 0.85) return;
-
       swiping = true;
     }
 
-    // ✅ 横確定後はスクロール等を抑制
     e.preventDefault();
 
     let x = baseX + dx;
@@ -781,8 +932,15 @@ function attachSwipe(row,id){
 }
 
 /* =======================
-   Drag reorder (edit mode)
+   ✅ 改善③：Drag reorder（プレースホルダ方式）
+   - 位置が急に詰まる感じを解消
+   - ドラッグ中は行が“浮く”
 ======================= */
+let placeholder = null;
+let dragRowRect = null;
+let dragOffsetY = 0;
+let dragPointerId = null;
+
 function startDrag(e,wrap){
   if(openEditId){
     const w = wrapEl(openEditId);
@@ -791,38 +949,112 @@ function startDrag(e,wrap){
     openEditId = null;
   }
 
-  dragWrap=wrap;
-  const row=wrap.querySelector(".row");
+  dragWrap = wrap;
+  const row = wrap.querySelector(".row");
   row.classList.add("dragging");
 
-  const move=ev=>{
-    const after=getAfter(ev.clientY);
-    if(after==null) list.appendChild(dragWrap);
-    else list.insertBefore(dragWrap,after);
-  };
-  const up=()=>{
-    row.classList.remove("dragging");
-    dragWrap=null;
-    persistOrder();
-    window.removeEventListener("pointermove",move);
-    window.removeEventListener("pointerup",up);
-    window.removeEventListener("pointercancel",up);
+  // プレースホルダ生成（同じ高さ）
+  const h = wrap.getBoundingClientRect().height;
+  placeholder = document.createElement("div");
+  placeholder.className = "placeholder";
+  placeholder.style.height = h + "px";
+
+  // 浮かせるための初期情報
+  dragRowRect = wrap.getBoundingClientRect();
+  dragOffsetY = e.clientY - dragRowRect.top;
+  dragPointerId = e.pointerId;
+
+  // DOM上でプレースホルダに置き換え
+  list.insertBefore(placeholder, wrap.nextSibling);
+
+  // wrapをfixedで浮かせる
+  const listRect = list.getBoundingClientRect();
+  wrap.style.width = listRect.width + "px";
+  wrap.classList.add("floating");
+  wrap.style.transform = `translate3d(${listRect.left}px, ${dragRowRect.top}px, 0)`;
+
+  // pointer capture
+  try{ wrap.setPointerCapture(dragPointerId); }catch{}
+
+  const move = (ev)=>{
+    if(!dragWrap) return;
+
+    ev.preventDefault();
+
+    const listRect2 = list.getBoundingClientRect();
+    const y = ev.clientY - dragOffsetY;
+
+    // 画面内で浮かせて追従
+    dragWrap.style.transform = `translate3d(${listRect2.left}px, ${y}px, 0)`;
+
+    // placeholder の挿入位置更新
+    const after = getAfterForPlaceholder(ev.clientY);
+    if(after === null){
+      // 末尾
+      list.appendChild(placeholder);
+    }else{
+      list.insertBefore(placeholder, after);
+    }
+
+    // 自動スクロール（カード内スクロールを少しだけ補助）
+    autoScrollWithinList(ev.clientY);
   };
 
-  window.addEventListener("pointermove",move,{passive:false});
-  window.addEventListener("pointerup",up,{passive:false});
-  window.addEventListener("pointercancel",up,{passive:false});
+  const up = ()=>{
+    if(!dragWrap) return;
+
+    // placeholder位置に戻す
+    list.insertBefore(dragWrap, placeholder);
+    placeholder.remove();
+    placeholder = null;
+
+    // styles reset
+    dragWrap.classList.remove("floating");
+    dragWrap.style.transform = "";
+    dragWrap.style.width = "";
+
+    row.classList.remove("dragging");
+    dragWrap = null;
+    dragRowRect = null;
+    dragPointerId = null;
+
+    persistOrder();
+
+    window.removeEventListener("pointermove", move, true);
+    window.removeEventListener("pointerup", up, true);
+    window.removeEventListener("pointercancel", up, true);
+  };
+
+  window.addEventListener("pointermove", move, {passive:false, capture:true});
+  window.addEventListener("pointerup", up, {passive:false, capture:true});
+  window.addEventListener("pointercancel", up, {passive:false, capture:true});
 }
 
-function getAfter(y){
-  const els=[...list.querySelectorAll(".swipe-wrap")].filter(w=>w!==dragWrap);
-  let closest={offset:-Infinity,el:null};
-  els.forEach(w=>{
-    const box=w.getBoundingClientRect();
-    const offset=y-box.top-box.height/2;
-    if(offset<0&&offset>closest.offset) closest={offset,el:w};
-  });
+function getAfterForPlaceholder(y){
+  const els = [...list.querySelectorAll(".swipe-wrap")]
+    .filter(w => w !== dragWrap);
+
+  let closest = {offset: -Infinity, el: null};
+  for(const w of els){
+    const box = w.getBoundingClientRect();
+    const offset = y - box.top - box.height/2;
+    if(offset < 0 && offset > closest.offset){
+      closest = {offset, el: w};
+    }
+  }
   return closest.el;
+}
+
+function autoScrollWithinList(pointerY){
+  const rect = list.getBoundingClientRect();
+  const edge = 36;         // 端からこの距離でスクロール開始
+  const speed = 10;        // スクロール速度
+
+  if(pointerY < rect.top + edge){
+    list.scrollTop -= speed;
+  }else if(pointerY > rect.bottom - edge){
+    list.scrollTop += speed;
+  }
 }
 
 function persistOrder(){
